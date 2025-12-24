@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "app_wifi.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        ir_control
+        rgb_led
+        esp_rainmaker
+        esp_wifi
+        nvs_flash
+        bt
+        driver
+        app_update
+        esp_timer
+        console
+)
