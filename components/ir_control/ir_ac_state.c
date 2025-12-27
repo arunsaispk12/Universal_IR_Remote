@@ -459,27 +459,188 @@ esp_err_t ir_ac_transmit_state(void)
  * LEARNING MODE
  * ============================================================================ */
 
+/**
+ * @brief Identify AC protocol from captured IR code
+ *
+ * Analyzes the captured IR code characteristics (bit length, carrier frequency,
+ * protocol type) to identify which AC protocol it matches.
+ */
+static ir_protocol_t identify_ac_protocol(const ir_code_t *code)
+{
+    if (!code) {
+        return IR_PROTOCOL_UNKNOWN;
+    }
+
+    /* Check if already identified by decoder */
+    if (code->protocol != IR_PROTOCOL_UNKNOWN && code->protocol != IR_PROTOCOL_RAW) {
+        /* Verify it's an AC protocol */
+        switch (code->protocol) {
+            case IR_PROTOCOL_DAIKIN:
+            case IR_PROTOCOL_CARRIER:
+            case IR_PROTOCOL_HITACHI:
+            case IR_PROTOCOL_MITSUBISHI:
+            case IR_PROTOCOL_MIDEA:
+            case IR_PROTOCOL_HAIER:
+            case IR_PROTOCOL_SAMSUNG48:
+            case IR_PROTOCOL_PANASONIC:
+            case IR_PROTOCOL_FUJITSU:
+            case IR_PROTOCOL_LG2:
+                return code->protocol;
+            default:
+                break;
+        }
+    }
+
+    /* Protocol not identified by decoder - try to identify by bit length */
+    ESP_LOGI(TAG, "Analyzing captured code: bits=%d, carrier=%dHz", code->bits, code->carrier_freq_hz);
+
+    /* Match by bit length (common AC protocol signatures) */
+    switch (code->bits) {
+        case 28:
+            ESP_LOGI(TAG, "Detected 28-bit frame → LG2 AC protocol");
+            return IR_PROTOCOL_LG2;
+
+        case 48:
+            /* Multiple AC protocols use 48-bit */
+            ESP_LOGI(TAG, "Detected 48-bit frame → Could be Midea, Samsung48, or Panasonic");
+            ESP_LOGI(TAG, "Defaulting to Midea (most common)");
+            return IR_PROTOCOL_MIDEA;
+
+        case 104:
+            ESP_LOGI(TAG, "Detected 104-bit frame → Haier AC protocol");
+            return IR_PROTOCOL_HAIER;
+
+        case 128:
+            ESP_LOGI(TAG, "Detected 128-bit frame → Carrier/Voltas AC protocol");
+            return IR_PROTOCOL_CARRIER;
+
+        case 152:
+            ESP_LOGI(TAG, "Detected 152-bit frame → Mitsubishi AC protocol");
+            return IR_PROTOCOL_MITSUBISHI;
+
+        case 264:
+            ESP_LOGI(TAG, "Detected 264-bit frame → Hitachi AC protocol");
+            return IR_PROTOCOL_HITACHI;
+
+        case 312:
+            ESP_LOGI(TAG, "Detected 312-bit frame → Daikin AC protocol");
+            return IR_PROTOCOL_DAIKIN;
+
+        default:
+            /* Variable length protocols */
+            if (code->bits >= 100 && code->bits <= 150) {
+                ESP_LOGI(TAG, "Detected variable length frame (%d bits) → Fujitsu AC protocol", code->bits);
+                return IR_PROTOCOL_FUJITSU;
+            }
+            break;
+    }
+
+    ESP_LOGW(TAG, "Could not identify AC protocol from %d-bit frame", code->bits);
+    return IR_PROTOCOL_UNKNOWN;
+}
+
 esp_err_t ir_ac_learn_protocol(uint32_t timeout_ms)
 {
     if (!is_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Starting AC protocol learning...");
-    ESP_LOGI(TAG, "Please press a button on your AC remote (e.g., Power ON + Cool 24°C)");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "AC Protocol Learning Started");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "Please press a button on your AC remote");
+    ESP_LOGI(TAG, "Recommended: Power ON + Cool 24°C + Auto Fan");
+    ESP_LOGI(TAG, "Timeout: %d seconds", timeout_ms / 1000);
 
-    /* TODO: Implement AC protocol learning */
-    /* This requires:
-     * 1. Capture IR frame from user's AC remote
-     * 2. Decode protocol using existing decoders
-     * 3. Extract state from decoded frame
-     * 4. Set protocol and initial state
-     */
+    /* Use IR learning system to capture a code */
+    ir_code_t captured_code = {0};
+    esp_err_t err = ir_learn_code(timeout_ms, &captured_code);
 
-    ESP_LOGW(TAG, "AC learning not yet fully implemented");
-    ESP_LOGW(TAG, "For now, manually set protocol using ir_ac_set_protocol()");
+    if (err == ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "AC learning timeout - no remote signal detected");
+        ESP_LOGI(TAG, "Please try again");
+        return err;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "AC learning failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    return ESP_ERR_NOT_SUPPORTED;
+    ESP_LOGI(TAG, "IR code captured successfully!");
+    ESP_LOGI(TAG, "  Protocol: %s", ir_get_protocol_name(captured_code.protocol));
+    ESP_LOGI(TAG, "  Bits: %d", captured_code.bits);
+    ESP_LOGI(TAG, "  Carrier: %d Hz", captured_code.carrier_freq_hz);
+
+    /* Identify AC protocol from captured code */
+    ir_protocol_t detected_protocol = identify_ac_protocol(&captured_code);
+
+    if (detected_protocol == IR_PROTOCOL_UNKNOWN) {
+        ESP_LOGE(TAG, "Failed to identify AC protocol");
+        ESP_LOGE(TAG, "This may not be an AC remote, or protocol is not supported");
+        ESP_LOGI(TAG, "Supported AC protocols:");
+        ESP_LOGI(TAG, "  - Carrier/Voltas (128-bit)");
+        ESP_LOGI(TAG, "  - Daikin (312-bit)");
+        ESP_LOGI(TAG, "  - Hitachi (264-bit)");
+        ESP_LOGI(TAG, "  - Mitsubishi (152-bit)");
+        ESP_LOGI(TAG, "  - Midea (48-bit)");
+        ESP_LOGI(TAG, "  - Haier (104-bit)");
+        ESP_LOGI(TAG, "  - Samsung48 (48-bit)");
+        ESP_LOGI(TAG, "  - Panasonic (48-bit)");
+        ESP_LOGI(TAG, "  - Fujitsu (variable)");
+        ESP_LOGI(TAG, "  - LG2 (28-bit)");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Set the detected protocol */
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "AC Protocol Detected: %s", ir_get_protocol_name(detected_protocol));
+    ESP_LOGI(TAG, "========================================");
+
+    err = ir_ac_set_protocol(detected_protocol, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set AC protocol: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* Mark AC as configured */
+    current_state.is_learned = true;
+    snprintf(current_state.brand, sizeof(current_state.brand), "%s",
+             ir_get_protocol_name(detected_protocol));
+
+    /* Try to decode initial state (optional - may not be fully implemented) */
+    ac_state_t decoded_state = {0};
+    if (ir_ac_decode_state(&captured_code, &decoded_state) == ESP_OK) {
+        ESP_LOGI(TAG, "Initial AC state decoded:");
+        ESP_LOGI(TAG, "  Power: %s", decoded_state.power ? "ON" : "OFF");
+        ESP_LOGI(TAG, "  Mode: %s", ir_ac_get_mode_name(decoded_state.mode));
+        ESP_LOGI(TAG, "  Temperature: %d°C", decoded_state.temperature);
+        ESP_LOGI(TAG, "  Fan Speed: %s", ir_ac_get_fan_speed_name(decoded_state.fan_speed));
+
+        /* Update current state with decoded values */
+        current_state.power = decoded_state.power;
+        current_state.mode = decoded_state.mode;
+        current_state.temperature = decoded_state.temperature;
+        current_state.fan_speed = decoded_state.fan_speed;
+        current_state.swing = decoded_state.swing;
+    } else {
+        ESP_LOGW(TAG, "Could not decode initial state from captured frame");
+        ESP_LOGI(TAG, "Using default state: Power=OFF, Mode=Cool, Temp=24°C");
+        /* Keep default state values */
+    }
+
+    /* Save configuration to NVS */
+    err = ir_ac_save_state();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to save AC configuration: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "AC configuration saved to NVS");
+    }
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "AC Learning Complete!");
+    ESP_LOGI(TAG, "You can now control your AC via RainMaker");
+    ESP_LOGI(TAG, "========================================");
+
+    return ESP_OK;
 }
 
 /* ============================================================================

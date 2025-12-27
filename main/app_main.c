@@ -163,9 +163,8 @@ static esp_err_t tv_write_cb(const esp_rmaker_device_t *device,
     /* Volume */
     else if (strcmp(param_name, "Volume") == 0) {
         int volume = val.val.i;
-        /* Volume is relative - use Up/Down actions */
-        ESP_LOGI(TAG, "TV Volume: %d", volume);
-        // TODO: Implement volume tracking and Up/Down logic
+        ESP_LOGI(TAG, "TV Volume: %d (use Vol+/Vol- actions)", volume);
+        /* Volume tracking not implemented - parameters are for UI only */
         return ESP_OK;
     }
     /* Mute */
@@ -177,8 +176,8 @@ static esp_err_t tv_write_cb(const esp_rmaker_device_t *device,
     /* Channel */
     else if (strcmp(param_name, "Channel") == 0) {
         int channel = val.val.i;
-        ESP_LOGI(TAG, "TV Channel: %d", channel);
-        // TODO: Implement channel tracking and Up/Down logic
+        ESP_LOGI(TAG, "TV Channel: %d (use Ch+/Ch- actions)", channel);
+        /* Channel tracking not implemented - parameters are for UI only */
         return ESP_OK;
     }
     /* Input Source */
@@ -296,6 +295,33 @@ static esp_err_t ac_write_cb(const esp_rmaker_device_t *device,
         const char *protocol_str = val.val.s;
         ESP_LOGI(TAG, "AC Learn Protocol: %s", protocol_str);
 
+        /* Auto-detect mode - trigger AC learning */
+        if (strcmp(protocol_str, "Auto-Detect") == 0) {
+            ESP_LOGI(TAG, "Starting AC protocol auto-detection...");
+            rgb_led_set_status(LED_STATUS_LEARNING);
+
+            esp_err_t err = ir_ac_learn_protocol(IR_LEARNING_TIMEOUT_MS);
+
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "AC protocol learned successfully!");
+                rgb_led_set_status(LED_STATUS_LEARN_SUCCESS);
+                vTaskDelay(pdMS_TO_TICKS(1500));
+            } else {
+                ESP_LOGE(TAG, "AC protocol learning failed: %s", esp_err_to_name(err));
+                rgb_led_set_status(LED_STATUS_LEARN_FAILED);
+                vTaskDelay(pdMS_TO_TICKS(1500));
+            }
+
+            /* Return to connected state */
+            if (app_wifi_is_connected()) {
+                rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
+            } else {
+                rgb_led_set_status(LED_STATUS_IDLE);
+            }
+
+            return err;
+        }
+
         /* Manual protocol selection */
         ir_protocol_t protocol = IR_PROTOCOL_UNKNOWN;
         if (strcmp(protocol_str, "Daikin") == 0) protocol = IR_PROTOCOL_DAIKIN;
@@ -304,10 +330,22 @@ static esp_err_t ac_write_cb(const esp_rmaker_device_t *device,
         }
         else if (strcmp(protocol_str, "Hitachi") == 0) protocol = IR_PROTOCOL_HITACHI;
         else if (strcmp(protocol_str, "Mitsubishi") == 0) protocol = IR_PROTOCOL_MITSUBISHI;
+        else if (strcmp(protocol_str, "Midea") == 0) protocol = IR_PROTOCOL_MIDEA;
+        else if (strcmp(protocol_str, "Haier") == 0) protocol = IR_PROTOCOL_HAIER;
+        else if (strcmp(protocol_str, "Samsung48") == 0) protocol = IR_PROTOCOL_SAMSUNG48;
+        else if (strcmp(protocol_str, "Panasonic") == 0) protocol = IR_PROTOCOL_PANASONIC;
+        else if (strcmp(protocol_str, "Fujitsu") == 0) protocol = IR_PROTOCOL_FUJITSU;
+        else if (strcmp(protocol_str, "LG2") == 0) protocol = IR_PROTOCOL_LG2;
 
         if (protocol != IR_PROTOCOL_UNKNOWN) {
-            return ir_ac_set_protocol(protocol, 0);
+            esp_err_t err = ir_ac_set_protocol(protocol, 0);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "AC protocol manually set to: %s", protocol_str);
+            }
+            return err;
         }
+
+        ESP_LOGW(TAG, "Unknown protocol: %s", protocol_str);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -330,7 +368,9 @@ static esp_err_t speaker_write_cb(const esp_rmaker_device_t *device,
     if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
         return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_POWER);
     } else if (strcmp(param_name, "Volume") == 0) {
-        // TODO: Volume tracking
+        int volume = val.val.i;
+        ESP_LOGI(TAG, "Speaker Volume: %d (use Vol+/Vol- actions)", volume);
+        /* Volume tracking not implemented */
         return ESP_OK;
     } else if (strcmp(param_name, "Mute") == 0) {
         return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_MUTE);
@@ -393,7 +433,9 @@ static esp_err_t stb_write_cb(const esp_rmaker_device_t *device,
     if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
         return ir_action_execute(IR_DEVICE_STB, IR_ACTION_POWER);
     } else if (strcmp(param_name, "Channel") == 0) {
-        // TODO: Channel tracking
+        int channel = val.val.i;
+        ESP_LOGI(TAG, "STB Channel: %d (use Ch+/Ch- actions)", channel);
+        /* Channel tracking not implemented */
         return ESP_OK;
     } else if (strcmp(param_name, "Play_Pause") == 0) {
         return ir_action_execute(IR_DEVICE_STB, IR_ACTION_STB_PLAY_PAUSE);

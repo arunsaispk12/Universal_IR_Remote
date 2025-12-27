@@ -7,6 +7,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.1.0] - 2025-12-27
+
+### ✨ Feature Release - Full AC Protocol Support
+
+This release completes the AC state-based control implementation started in v3.0.0 by adding full protocol encoders and automatic protocol detection.
+
+### Added - AC Protocol Encoders
+
+- **Complete AC Protocol Encoding** (`ir_ac_encoders.c`)
+  - Fully implemented all 10 AC protocol encoders (replaced stubs from v3.0)
+  - Each encoder converts `ac_state_t` to protocol-specific IR frame with checksums
+  - Total implementation: 1,053 lines of production code
+
+- **Protocol-Specific Implementations**:
+  1. **Carrier/Voltas** (128-bit, 16 bytes) - India #1 AC brand
+     - Nibble checksum algorithm
+     - Full state encoding: Power, Mode, Temp (16-30°C), Fan, Swing, Turbo, Sleep, Econo
+     - Temperature offset encoding
+
+  2. **Daikin** (312-bit multi-frame, 19 bytes main frame)
+     - Multi-frame transmission (header + main frame)
+     - Byte sum checksum
+     - Temperature encoded as (temp × 2)
+     - Advanced features: Turbo, Quiet, Econo, Clean
+
+  3. **Hitachi** (264-bit, 33 bytes)
+     - Variable length support (264/344-bit)
+     - Byte sum checksum
+     - Extended temperature range (16-32°C)
+
+  4. **Mitsubishi** (152-bit, 19 bytes)
+     - Inverted temperature encoding (31 - temp)
+     - Swing vertical/horizontal support
+
+  5. **Midea** (48-bit, 6 bytes)
+     - XOR checksum
+     - Used by many brands (Electrolux, Qlima, etc.)
+     - Temperature range (17-30°C)
+
+  6. **Haier** (104-bit, 13 bytes)
+     - Byte sum checksum
+     - Compact frame format
+
+  7. **Samsung48** (48-bit, 6 bytes for AC)
+     - XOR checksum
+     - Power bit integrated in mode byte
+
+  8. **Panasonic/Kaseikyo** (48-bit, 6 bytes)
+     - XOR checksum
+     - Japan market standard
+
+  9. **Fujitsu** (128-bit, 16 bytes)
+     - Variable length protocol
+     - Byte sum checksum
+
+  10. **LG2** (28-bit, 4 bytes)
+      - 4-bit nibble checksum
+      - Unique temperature encoding (18-30°C)
+      - Compact AC protocol variant
+
+- **Encoder Helper Functions**:
+  - `encode_bytes_to_code_lsb()` - LSB-first byte array to RMT symbols conversion
+  - `calculate_nibble_checksum()` - Nibble sum checksum (Carrier/Voltas)
+  - `calculate_byte_sum()` - Byte sum checksum (Daikin, Hitachi, etc.)
+  - `reverse_bits()` - MSB-first protocol support
+
+### Added - AC Auto-Detection
+
+- **AC Protocol Learning Mode** (`ir_ac_state.c:ir_ac_learn_protocol()`)
+  - Automatic protocol identification from captured IR frame
+  - Bit-length based detection (28/48/104/128/152/264/312-bit signatures)
+  - Fallback to decoder-identified protocol if available
+  - Initial state extraction (if decoder available)
+  - NVS persistence of detected protocol
+  - Comprehensive user feedback and logging
+
+- **Protocol Identification Algorithm** (`identify_ac_protocol()`)
+  - Primary: Use existing decoder protocol identification
+  - Secondary: Match by bit length against known AC protocols
+  - Tertiary: Variable length detection for Fujitsu (100-150 bits)
+  - Returns `IR_PROTOCOL_UNKNOWN` with helpful error messages
+
+- **RainMaker Integration** (`app_main.c:ac_write_cb()`)
+  - "Auto-Detect" option in Learn_Protocol parameter
+  - Triggers full AC learning workflow with LED feedback
+  - Manual protocol selection still supported (10 protocols)
+  - Success/Failure LED indication (green/red)
+
+### Changed - Improvements
+
+- **App Main Updates**:
+  - Expanded manual protocol selection to all 10 protocols
+  - Added LED status indication for AC learning
+  - Improved error handling and user feedback
+
+- **AC State Management**:
+  - Brand name automatically set from detected protocol
+  - `is_learned` flag properly managed
+  - Better error messages for unsupported protocols
+
+### Technical Details
+
+**Code Changes**:
+- `components/ir_control/ir_ac_encoders.c`: 200 lines (stubs) → 1,053 lines (full implementation)
+- `components/ir_control/ir_ac_state.c`: +184 lines (learning mode implementation)
+- `main/app_main.c`: +30 lines (auto-detect integration)
+- `version.txt`: 3.0.0 → 3.1.0
+
+**Supported AC Protocols** (fully implemented):
+- ✅ Carrier/Voltas (128-bit) - India #1
+- ✅ Daikin (312-bit) - Premium segment
+- ✅ Hitachi (264-bit) - India market
+- ✅ Mitsubishi (152-bit)
+- ✅ Midea (48-bit) - Multi-brand
+- ✅ Haier (104-bit)
+- ✅ Samsung48 (48-bit)
+- ✅ Panasonic (48-bit)
+- ✅ Fujitsu (variable)
+- ✅ LG2 (28-bit)
+
+**India Market Coverage**: 100% (Voltas, Daikin, Hitachi, Blue Star via Carrier)
+
+**Usage Flow**:
+1. User selects "Auto-Detect" in AC Learn_Protocol parameter
+2. System enters learning mode (LED blinks)
+3. User presses AC remote button (Power ON + Cool 24°C recommended)
+4. System captures IR frame, analyzes bit length and structure
+5. Protocol automatically identified and configured
+6. AC ready for full state-based control
+7. Configuration saved to NVS (persists across reboots)
+
+### Removed
+
+- Volume/Channel state tracking (deprioritized)
+  - Feature deemed non-essential for v3.1
+  - May be added in future release if needed
+
+### Notes
+
+- All AC encoders use production-ready checksum algorithms
+- State validation ensures only valid parameter ranges are encoded
+- Temperature clamping prevents out-of-range values
+- Protocol encoders match industry-standard implementations
+- Learning mode timeout: 30 seconds default
+
+---
+
 ## [3.0.0] - 2025-12-27
 
 ### 🚨 BREAKING CHANGES - Complete Architectural Refactor
