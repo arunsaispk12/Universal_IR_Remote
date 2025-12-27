@@ -1,9 +1,11 @@
 /**
  * @file app_main.c
- * @brief Universal IR Remote Control with ESP RainMaker
+ * @brief Universal IR Remote Control with ESP RainMaker - Multi-Device Architecture (v3.0)
  *
  * Features:
- * - 32 programmable IR buttons
+ * - Multi-device architecture (TV, AC, STB, Speaker, Fan)
+ * - Logical action mapping (RainMaker params → IR codes)
+ * - AC state-based control (full state regeneration)
  * - BLE WiFi provisioning
  * - Cloud control via RainMaker app
  * - IR learning and transmission
@@ -11,6 +13,13 @@
  * - OTA updates
  * - Factory reset (10s button press)
  * - WiFi reset (3s button press)
+ *
+ * Architecture:
+ * RainMaker Device → Logical Parameter → Action Mapping → IR Code → Transmission
+ *
+ * Example: TV.Volume parameter change → IR_ACTION_VOL_UP → Stored IR code → Transmit
+ *
+ * v3.0 - Complete architectural refactor for production deployment
  */
 
 #include <string.h>
@@ -37,31 +46,35 @@
 #include "app_config.h"
 #include "app_wifi.h"
 #include "ir_control.h"
+#include "ir_action.h"
+#include "ir_ac_state.h"
 #include "rgb_led.h"
 
 static const char *TAG = "app_main";
 
-/* RainMaker handles */
-static esp_rmaker_device_t *ir_remote_device = NULL;
-static esp_rmaker_param_t *button_params[IR_BTN_MAX * 3]; // Learn, Transmit, Learned for each button
+/* ============================================================================
+ * RAINMAKER DEVICE HANDLES
+ * ============================================================================ */
 
-/* Button press tracking */
+static esp_rmaker_device_t *tv_device = NULL;
+static esp_rmaker_device_t *ac_device = NULL;
+static esp_rmaker_device_t *stb_device = NULL;
+static esp_rmaker_device_t *speaker_device = NULL;
+static esp_rmaker_device_t *fan_device = NULL;
+
+/* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
 static uint32_t button_press_start = 0;
 static bool factory_reset_triggered = false;
 
-/* IR learning state */
-static ir_button_t current_learning_button = IR_BTN_MAX;
+/* Learning state */
+typedef struct {
+    ir_device_type_t device;
+    ir_action_t action;
+    bool is_active;
+} learning_state_t;
 
-/* Button parameter names for each IR button */
-static const char *button_param_names[IR_BTN_MAX] = {
-    "Power", "Source", "Menu", "Home", "Back", "OK",
-    "Vol+", "Vol-", "Mute",
-    "Ch+", "Ch-",
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "Up", "Down", "Left", "Right",
-    "Custom1", "Custom2", "Custom3", "Custom4", "Custom5", "Custom6"
-};
+static learning_state_t learning_state = {0};
 
 /* ============================================================================
  * IR LEARNING CALLBACKS
@@ -72,28 +85,32 @@ static const char *button_param_names[IR_BTN_MAX] = {
  */
 static void ir_learn_success_callback(ir_button_t button, ir_code_t *code, void *arg)
 {
-    ESP_LOGI(TAG, "IR learning successful for button: %s (%s protocol)",
-             ir_get_button_name(button),
+    if (!learning_state.is_active) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "IR learning successful for %s.%s (%s protocol)",
+             ir_action_get_device_name(learning_state.device),
+             ir_action_get_action_name(learning_state.action),
              ir_get_protocol_name(code->protocol));
 
-    /* Update LED status */
-    rgb_led_set_status(LED_STATUS_LEARN_SUCCESS);
+    /* Save code to NVS using action mapping */
+    if (ir_action_save(learning_state.device, learning_state.action, code) == ESP_OK) {
+        ESP_LOGI(TAG, "IR code saved to NVS");
+        rgb_led_set_status(LED_STATUS_LEARN_SUCCESS);
+    } else {
+        ESP_LOGE(TAG, "Failed to save IR code");
+        rgb_led_set_status(LED_STATUS_ERROR);
+    }
+
     vTaskDelay(pdMS_TO_TICKS(1500));
 
-    /* Save code to NVS */
-    if (ir_save_code(button, code) == ESP_OK) {
-        ESP_LOGI(TAG, "IR code saved to NVS");
-    }
-
-    /* Update RainMaker "Learned" status parameter */
-    if (button < IR_BTN_MAX && button_params[button * 3 + 2]) {
-        esp_rmaker_param_update_and_report(button_params[button * 3 + 2], esp_rmaker_bool(true));
-    }
-
     /* Reset learning state */
-    current_learning_button = IR_BTN_MAX;
+    learning_state.is_active = false;
+    learning_state.device = IR_DEVICE_NONE;
+    learning_state.action = IR_ACTION_NONE;
 
-    /* Return to idle or connected state */
+    /* Return to connected state */
     if (app_wifi_is_connected()) {
         rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
     } else {
@@ -106,16 +123,17 @@ static void ir_learn_success_callback(ir_button_t button, ir_code_t *code, void 
  */
 static void ir_learn_fail_callback(ir_button_t button, void *arg)
 {
-    ESP_LOGW(TAG, "IR learning failed for button: %s (timeout)", ir_get_button_name(button));
+    ESP_LOGW(TAG, "IR learning failed (timeout)");
 
-    /* Update LED status */
     rgb_led_set_status(LED_STATUS_LEARN_FAILED);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     /* Reset learning state */
-    current_learning_button = IR_BTN_MAX;
+    learning_state.is_active = false;
+    learning_state.device = IR_DEVICE_NONE;
+    learning_state.action = IR_ACTION_NONE;
 
-    /* Return to idle or connected state */
+    /* Return to connected state */
     if (app_wifi_is_connected()) {
         rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
     } else {
@@ -124,83 +142,263 @@ static void ir_learn_fail_callback(ir_button_t button, void *arg)
 }
 
 /* ============================================================================
- * RAINMAKER WRITE CALLBACKS
+ * TV DEVICE CALLBACKS
  * ============================================================================ */
 
-/**
- * @brief RainMaker write callback for IR button parameters
- */
-static esp_err_t ir_button_write_cb(const esp_rmaker_device_t *device,
-                                     const esp_rmaker_param_t *param,
-                                     const esp_rmaker_param_val_t val,
-                                     void *priv_data,
-                                     esp_rmaker_write_ctx_t *ctx)
+static esp_err_t tv_write_cb(const esp_rmaker_device_t *device,
+                               const esp_rmaker_param_t *param,
+                               const esp_rmaker_param_val_t val,
+                               void *priv_data,
+                               esp_rmaker_write_ctx_t *ctx)
 {
-    if (!device || !param) {
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "TV parameter update: %s", param_name);
+
+    /* Power */
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        bool power = val.val.b;
+        ESP_LOGI(TAG, "TV Power: %s", power ? "ON" : "OFF");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_POWER);
+    }
+    /* Volume */
+    else if (strcmp(param_name, "Volume") == 0) {
+        int volume = val.val.i;
+        /* Volume is relative - use Up/Down actions */
+        ESP_LOGI(TAG, "TV Volume: %d", volume);
+        // TODO: Implement volume tracking and Up/Down logic
+        return ESP_OK;
+    }
+    /* Mute */
+    else if (strcmp(param_name, "Mute") == 0) {
+        bool mute = val.val.b;
+        ESP_LOGI(TAG, "TV Mute: %s", mute ? "ON" : "OFF");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_MUTE);
+    }
+    /* Channel */
+    else if (strcmp(param_name, "Channel") == 0) {
+        int channel = val.val.i;
+        ESP_LOGI(TAG, "TV Channel: %d", channel);
+        // TODO: Implement channel tracking and Up/Down logic
+        return ESP_OK;
+    }
+    /* Input Source */
+    else if (strcmp(param_name, "Input") == 0) {
+        const char *input = val.val.s;
+        ESP_LOGI(TAG, "TV Input: %s", input);
+
+        if (strcmp(input, "HDMI1") == 0) {
+            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI1);
+        } else if (strcmp(input, "HDMI2") == 0) {
+            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI2);
+        } else if (strcmp(input, "HDMI3") == 0) {
+            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI3);
+        } else if (strcmp(input, "AV") == 0) {
+            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_AV);
+        } else {
+            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT);
+        }
+    }
+    /* Learn Mode */
+    else if (strcmp(param_name, "Learn_Mode") == 0) {
+        const char *action_name = val.val.s;
+        ESP_LOGI(TAG, "TV Learn Mode: %s", action_name);
+
+        /* Map action name to ir_action_t */
+        ir_action_t action = IR_ACTION_NONE;
+        if (strcmp(action_name, "Power") == 0) action = IR_ACTION_POWER;
+        else if (strcmp(action_name, "VolumeUp") == 0) action = IR_ACTION_VOL_UP;
+        else if (strcmp(action_name, "VolumeDown") == 0) action = IR_ACTION_VOL_DOWN;
+        else if (strcmp(action_name, "Mute") == 0) action = IR_ACTION_MUTE;
+        else if (strcmp(action_name, "ChannelUp") == 0) action = IR_ACTION_CH_UP;
+        else if (strcmp(action_name, "ChannelDown") == 0) action = IR_ACTION_CH_DOWN;
+        else if (strcmp(action_name, "Input") == 0) action = IR_ACTION_TV_INPUT;
+        else if (strcmp(action_name, "Menu") == 0) action = IR_ACTION_MENU;
+        else if (strcmp(action_name, "OK") == 0) action = IR_ACTION_NAV_OK;
+        else if (strcmp(action_name, "Back") == 0) action = IR_ACTION_BACK;
+        else {
+            ESP_LOGW(TAG, "Unknown action: %s", action_name);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        /* Start learning */
+        learning_state.device = IR_DEVICE_TV;
+        learning_state.action = action;
+        learning_state.is_active = true;
+
+        rgb_led_set_status(LED_STATUS_LEARNING);
+        return ir_learn_start(IR_BTN_CUSTOM_1, IR_LEARNING_TIMEOUT_MS);
+    }
+
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * AC DEVICE CALLBACKS
+ * ============================================================================ */
+
+static esp_err_t ac_write_cb(const esp_rmaker_device_t *device,
+                               const esp_rmaker_param_t *param,
+                               const esp_rmaker_param_val_t val,
+                               void *priv_data,
+                               esp_rmaker_write_ctx_t *ctx)
+{
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "AC parameter update: %s", param_name);
+
+    /* AC Power */
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        bool power = val.val.b;
+        ESP_LOGI(TAG, "AC Power: %s", power ? "ON" : "OFF");
+        return ir_ac_set_power(power);
+    }
+    /* AC Mode */
+    else if (strcmp(param_name, "Mode") == 0) {
+        const char *mode_str = val.val.s;
+        ESP_LOGI(TAG, "AC Mode: %s", mode_str);
+
+        ac_mode_t mode = AC_MODE_COOL;
+        if (strcmp(mode_str, "Cool") == 0) mode = AC_MODE_COOL;
+        else if (strcmp(mode_str, "Heat") == 0) mode = AC_MODE_HEAT;
+        else if (strcmp(mode_str, "Auto") == 0) mode = AC_MODE_AUTO;
+        else if (strcmp(mode_str, "Dry") == 0) mode = AC_MODE_DRY;
+        else if (strcmp(mode_str, "Fan") == 0) mode = AC_MODE_FAN;
+
+        return ir_ac_set_mode(mode);
+    }
+    /* AC Temperature */
+    else if (strcmp(param_name, ESP_RMAKER_DEF_TEMPERATURE_NAME) == 0) {
+        float temp = val.val.f;
+        uint8_t temperature = (uint8_t)temp;
+        ESP_LOGI(TAG, "AC Temperature: %d°C", temperature);
+        return ir_ac_set_temperature(temperature);
+    }
+    /* AC Fan Speed */
+    else if (strcmp(param_name, "Fan_Speed") == 0) {
+        const char *fan_str = val.val.s;
+        ESP_LOGI(TAG, "AC Fan Speed: %s", fan_str);
+
+        ac_fan_speed_t fan_speed = AC_FAN_AUTO;
+        if (strcmp(fan_str, "Auto") == 0) fan_speed = AC_FAN_AUTO;
+        else if (strcmp(fan_str, "Low") == 0) fan_speed = AC_FAN_LOW;
+        else if (strcmp(fan_str, "Medium") == 0) fan_speed = AC_FAN_MEDIUM;
+        else if (strcmp(fan_str, "High") == 0) fan_speed = AC_FAN_HIGH;
+
+        return ir_ac_set_fan_speed(fan_speed);
+    }
+    /* AC Swing */
+    else if (strcmp(param_name, "Swing") == 0) {
+        bool swing = val.val.b;
+        ESP_LOGI(TAG, "AC Swing: %s", swing ? "ON" : "OFF");
+        return ir_ac_set_swing(swing ? AC_SWING_VERTICAL : AC_SWING_OFF);
+    }
+    /* AC Learn Protocol */
+    else if (strcmp(param_name, "Learn_Protocol") == 0) {
+        const char *protocol_str = val.val.s;
+        ESP_LOGI(TAG, "AC Learn Protocol: %s", protocol_str);
+
+        /* Manual protocol selection */
+        ir_protocol_t protocol = IR_PROTOCOL_UNKNOWN;
+        if (strcmp(protocol_str, "Daikin") == 0) protocol = IR_PROTOCOL_DAIKIN;
+        else if (strcmp(protocol_str, "Carrier") == 0 || strcmp(protocol_str, "Voltas") == 0) {
+            protocol = IR_PROTOCOL_CARRIER;
+        }
+        else if (strcmp(protocol_str, "Hitachi") == 0) protocol = IR_PROTOCOL_HITACHI;
+        else if (strcmp(protocol_str, "Mitsubishi") == 0) protocol = IR_PROTOCOL_MITSUBISHI;
+
+        if (protocol != IR_PROTOCOL_UNKNOWN) {
+            return ir_ac_set_protocol(protocol, 0);
+        }
         return ESP_ERR_INVALID_ARG;
     }
 
-    const char *param_name = esp_rmaker_param_get_name(param);
-    ESP_LOGI(TAG, "Parameter update: %s = %s", param_name, val.val.b ? "true" : "false");
+    return ESP_OK;
+}
 
-    /* Only process 'true' values (button press) */
-    if (!val.val.b) {
+/* ============================================================================
+ * SPEAKER DEVICE CALLBACKS
+ * ============================================================================ */
+
+static esp_err_t speaker_write_cb(const esp_rmaker_device_t *device,
+                                    const esp_rmaker_param_t *param,
+                                    const esp_rmaker_param_val_t val,
+                                    void *priv_data,
+                                    esp_rmaker_write_ctx_t *ctx)
+{
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "Speaker parameter update: %s", param_name);
+
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_POWER);
+    } else if (strcmp(param_name, "Volume") == 0) {
+        // TODO: Volume tracking
         return ESP_OK;
+    } else if (strcmp(param_name, "Mute") == 0) {
+        return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_MUTE);
     }
 
-    /* Find which button and action */
-    for (int i = 0; i < IR_BTN_MAX; i++) {
-        char learn_name[32], transmit_name[32];
-        snprintf(learn_name, sizeof(learn_name), "%s_Learn", button_param_names[i]);
-        snprintf(transmit_name, sizeof(transmit_name), "%s_Transmit", button_param_names[i]);
+    return ESP_OK;
+}
 
-        if (strcmp(param_name, learn_name) == 0) {
-            /* Learn button pressed */
-            ESP_LOGI(TAG, "Starting IR learning for button: %s", button_param_names[i]);
-            rgb_led_set_status(LED_STATUS_LEARNING);
-            current_learning_button = (ir_button_t)i;
+/* ============================================================================
+ * FAN DEVICE CALLBACKS
+ * ============================================================================ */
 
-            esp_err_t err = ir_learn_start((ir_button_t)i, IR_LEARNING_TIMEOUT_MS);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to start IR learning: %s", esp_err_to_name(err));
-                rgb_led_set_status(LED_STATUS_ERROR);
-                current_learning_button = IR_BTN_MAX;
-            }
+static esp_err_t fan_write_cb(const esp_rmaker_device_t *device,
+                                const esp_rmaker_param_t *param,
+                                const esp_rmaker_param_val_t val,
+                                void *priv_data,
+                                esp_rmaker_write_ctx_t *ctx)
+{
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "Fan parameter update: %s", param_name);
 
-            /* Reset parameter to false */
-            esp_rmaker_param_update_and_report(param, esp_rmaker_bool(false));
-            return ESP_OK;
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        return ir_action_execute(IR_DEVICE_FAN, IR_ACTION_POWER);
+    } else if (strcmp(param_name, ESP_RMAKER_DEF_SPEED_NAME) == 0) {
+        int speed = val.val.i;
+        ESP_LOGI(TAG, "Fan Speed: %d", speed);
 
-        } else if (strcmp(param_name, transmit_name) == 0) {
-            /* Transmit button pressed */
-            ESP_LOGI(TAG, "Transmitting IR code for button: %s", button_param_names[i]);
-            rgb_led_set_status(LED_STATUS_TRANSMITTING);
-
-            esp_err_t err = ir_transmit_button((ir_button_t)i);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "IR code transmitted successfully");
-                vTaskDelay(pdMS_TO_TICKS(200));
-            } else if (err == ESP_ERR_NOT_FOUND) {
-                ESP_LOGW(TAG, "No learned code for button: %s", button_param_names[i]);
-                rgb_led_set_status(LED_STATUS_ERROR);
-                vTaskDelay(pdMS_TO_TICKS(500));
-            } else {
-                ESP_LOGE(TAG, "Failed to transmit IR code: %s", esp_err_to_name(err));
-                rgb_led_set_status(LED_STATUS_ERROR);
-                vTaskDelay(pdMS_TO_TICKS(500));
-            }
-
-            /* Return to connected state */
-            if (app_wifi_is_connected()) {
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
-            } else {
-                rgb_led_set_status(LED_STATUS_IDLE);
-            }
-
-            /* Reset parameter to false */
-            esp_rmaker_param_update_and_report(param, esp_rmaker_bool(false));
-            return ESP_OK;
+        /* Map speed to discrete actions */
+        ir_action_t action = IR_ACTION_FAN_SPEED_1;
+        switch (speed) {
+            case 1: action = IR_ACTION_FAN_SPEED_1; break;
+            case 2: action = IR_ACTION_FAN_SPEED_2; break;
+            case 3: action = IR_ACTION_FAN_SPEED_3; break;
+            case 4: action = IR_ACTION_FAN_SPEED_4; break;
+            case 5: action = IR_ACTION_FAN_SPEED_5; break;
+            default: action = IR_ACTION_FAN_SPEED_3; break;
         }
+
+        return ir_action_execute(IR_DEVICE_FAN, action);
+    } else if (strcmp(param_name, "Swing") == 0) {
+        return ir_action_execute(IR_DEVICE_FAN, IR_ACTION_FAN_SWING);
+    }
+
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * STB DEVICE CALLBACKS
+ * ============================================================================ */
+
+static esp_err_t stb_write_cb(const esp_rmaker_device_t *device,
+                                const esp_rmaker_param_t *param,
+                                const esp_rmaker_param_val_t val,
+                                void *priv_data,
+                                esp_rmaker_write_ctx_t *ctx)
+{
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "STB parameter update: %s", param_name);
+
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_POWER);
+    } else if (strcmp(param_name, "Channel") == 0) {
+        // TODO: Channel tracking
+        return ESP_OK;
+    } else if (strcmp(param_name, "Play_Pause") == 0) {
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_STB_PLAY_PAUSE);
+    } else if (strcmp(param_name, "Guide") == 0) {
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_STB_GUIDE);
     }
 
     return ESP_OK;
@@ -210,57 +408,171 @@ static esp_err_t ir_button_write_cb(const esp_rmaker_device_t *device,
  * RAINMAKER DEVICE CREATION
  * ============================================================================ */
 
-/**
- * @brief Create RainMaker device with all 32 IR buttons
- */
-static esp_err_t create_ir_remote_device(esp_rmaker_node_t *node)
+static esp_err_t create_tv_device(esp_rmaker_node_t *node)
 {
-    /* Create IR Remote device */
-    ir_remote_device = esp_rmaker_device_create("IR Remote", ESP_RMAKER_DEVICE_OTHER, NULL);
-    if (!ir_remote_device) {
-        ESP_LOGE(TAG, "Failed to create IR Remote device");
+    tv_device = esp_rmaker_tv_device_create("TV", NULL, true);
+    if (!tv_device) {
+        ESP_LOGE(TAG, "Failed to create TV device");
         return ESP_FAIL;
     }
 
-    /* Add device to node */
-    esp_rmaker_node_add_device(node, ir_remote_device);
+    esp_rmaker_device_add_cb(tv_device, tv_write_cb, NULL);
 
-    /* Create parameters for each button (Learn, Transmit, Learned status) */
-    for (int i = 0; i < IR_BTN_MAX; i++) {
-        char learn_name[32], transmit_name[32], learned_name[32];
+    /* Add TV-specific parameters */
+    esp_rmaker_device_add_param(tv_device, esp_rmaker_name_param_create("Name", "TV"));
 
-        snprintf(learn_name, sizeof(learn_name), "%s_Learn", button_param_names[i]);
-        snprintf(transmit_name, sizeof(transmit_name), "%s_Transmit", button_param_names[i]);
-        snprintf(learned_name, sizeof(learned_name), "%s_Learned", button_param_names[i]);
+    esp_rmaker_param_t *volume = esp_rmaker_param_create("Volume", "esp.param.range",
+                                                           esp_rmaker_int(50), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_bounds(volume, esp_rmaker_int(0), esp_rmaker_int(100), esp_rmaker_int(1));
+    esp_rmaker_device_add_param(tv_device, volume);
 
-        /* Learn parameter (write-only) */
-        button_params[i * 3] = esp_rmaker_param_create(learn_name, ESP_RMAKER_PARAM_TOGGLE,
-                                                        esp_rmaker_bool(false), PROP_FLAG_WRITE);
-        if (button_params[i * 3]) {
-            esp_rmaker_param_add_ui_type(button_params[i * 3], ESP_RMAKER_UI_TOGGLE);
-            esp_rmaker_device_add_param(ir_remote_device, button_params[i * 3]);
-            esp_rmaker_device_assign_param_callback(ir_remote_device, ir_button_write_cb, NULL);
-        }
+    esp_rmaker_param_t *mute = esp_rmaker_param_create("Mute", "esp.param.toggle",
+                                                         esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(tv_device, mute);
 
-        /* Transmit parameter (write-only) */
-        button_params[i * 3 + 1] = esp_rmaker_param_create(transmit_name, ESP_RMAKER_PARAM_TOGGLE,
-                                                            esp_rmaker_bool(false), PROP_FLAG_WRITE);
-        if (button_params[i * 3 + 1]) {
-            esp_rmaker_param_add_ui_type(button_params[i * 3 + 1], ESP_RMAKER_UI_TOGGLE);
-            esp_rmaker_device_add_param(ir_remote_device, button_params[i * 3 + 1]);
-        }
+    esp_rmaker_param_t *channel = esp_rmaker_param_create("Channel", "esp.param.range",
+                                                            esp_rmaker_int(1), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_bounds(channel, esp_rmaker_int(1), esp_rmaker_int(999), esp_rmaker_int(1));
+    esp_rmaker_device_add_param(tv_device, channel);
 
-        /* Learned status parameter (read-only) */
-        bool is_learned = ir_is_learned((ir_button_t)i);
-        button_params[i * 3 + 2] = esp_rmaker_param_create(learned_name, ESP_RMAKER_PARAM_TOGGLE,
-                                                            esp_rmaker_bool(is_learned), PROP_FLAG_READ);
-        if (button_params[i * 3 + 2]) {
-            esp_rmaker_param_add_ui_type(button_params[i * 3 + 2], ESP_RMAKER_UI_TOGGLE);
-            esp_rmaker_device_add_param(ir_remote_device, button_params[i * 3 + 2]);
-        }
+    esp_rmaker_param_t *input = esp_rmaker_param_create("Input", "esp.param.string",
+                                                          esp_rmaker_str("HDMI1"), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(tv_device, input);
+
+    /* Learning mode parameter */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    esp_rmaker_device_add_param(tv_device, learn_mode);
+
+    esp_rmaker_node_add_device(node, tv_device);
+    ESP_LOGI(TAG, "TV device created");
+    return ESP_OK;
+}
+
+static esp_err_t create_ac_device(esp_rmaker_node_t *node)
+{
+    ac_device = esp_rmaker_ac_device_create("AC", NULL, false);
+    if (!ac_device) {
+        ESP_LOGE(TAG, "Failed to create AC device");
+        return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "IR Remote device created with %d buttons", IR_BTN_MAX);
+    esp_rmaker_device_add_cb(ac_device, ac_write_cb, NULL);
+
+    /* Get current AC state */
+    const ac_state_t *state = ir_ac_state_get();
+
+    /* Add AC-specific parameters */
+    esp_rmaker_device_add_param(ac_device, esp_rmaker_name_param_create("Name", "AC"));
+
+    /* Mode parameter */
+    esp_rmaker_param_t *mode = esp_rmaker_param_create("Mode", "esp.param.mode",
+                                                         esp_rmaker_str("Cool"), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(mode, ESP_RMAKER_UI_DROPDOWN);
+    esp_rmaker_device_add_param(ac_device, mode);
+
+    /* Temperature parameter */
+    esp_rmaker_param_t *temp = esp_rmaker_temperature_param_create("Temperature",
+                                                                     state->temperature);
+    esp_rmaker_param_add_bounds(temp, esp_rmaker_float(AC_TEMP_MIN),
+                                 esp_rmaker_float(AC_TEMP_MAX), esp_rmaker_float(1));
+    esp_rmaker_device_add_param(ac_device, temp);
+
+    /* Fan Speed parameter */
+    esp_rmaker_param_t *fan_speed = esp_rmaker_param_create("Fan_Speed", "esp.param.mode",
+                                                              esp_rmaker_str("Auto"), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(fan_speed, ESP_RMAKER_UI_DROPDOWN);
+    esp_rmaker_device_add_param(ac_device, fan_speed);
+
+    /* Swing parameter */
+    esp_rmaker_param_t *swing = esp_rmaker_param_create("Swing", "esp.param.toggle",
+                                                          esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(ac_device, swing);
+
+    /* Protocol selection parameter */
+    esp_rmaker_param_t *learn_protocol = esp_rmaker_param_create("Learn_Protocol", "esp.param.string",
+                                                                   esp_rmaker_str("Daikin"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_protocol, ESP_RMAKER_UI_DROPDOWN);
+    esp_rmaker_device_add_param(ac_device, learn_protocol);
+
+    esp_rmaker_node_add_device(node, ac_device);
+    ESP_LOGI(TAG, "AC device created (Protocol: %s)",
+             state->is_learned ? ir_get_protocol_name(state->protocol) : "Not configured");
+    return ESP_OK;
+}
+
+static esp_err_t create_speaker_device(esp_rmaker_node_t *node)
+{
+    speaker_device = esp_rmaker_speaker_device_create("Soundbar", NULL, true);
+    if (!speaker_device) {
+        ESP_LOGE(TAG, "Failed to create Speaker device");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(speaker_device, speaker_write_cb, NULL);
+    esp_rmaker_device_add_param(speaker_device, esp_rmaker_name_param_create("Name", "Soundbar"));
+
+    esp_rmaker_node_add_device(node, speaker_device);
+    ESP_LOGI(TAG, "Speaker device created");
+    return ESP_OK;
+}
+
+static esp_err_t create_fan_device(esp_rmaker_node_t *node)
+{
+    fan_device = esp_rmaker_fan_device_create("Fan", NULL, false);
+    if (!fan_device) {
+        ESP_LOGE(TAG, "Failed to create Fan device");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(fan_device, fan_write_cb, NULL);
+    esp_rmaker_device_add_param(fan_device, esp_rmaker_name_param_create("Name", "Fan"));
+
+    /* Fan speed */
+    esp_rmaker_param_t *speed = esp_rmaker_speed_param_create("Speed", 3);
+    esp_rmaker_param_add_bounds(speed, esp_rmaker_int(1), esp_rmaker_int(5), esp_rmaker_int(1));
+    esp_rmaker_device_add_param(fan_device, speed);
+
+    /* Swing */
+    esp_rmaker_param_t *swing = esp_rmaker_param_create("Swing", "esp.param.toggle",
+                                                          esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(fan_device, swing);
+
+    esp_rmaker_node_add_device(node, fan_device);
+    ESP_LOGI(TAG, "Fan device created");
+    return ESP_OK;
+}
+
+static esp_err_t create_stb_device(esp_rmaker_node_t *node)
+{
+    stb_device = esp_rmaker_device_create("STB", ESP_RMAKER_DEVICE_OTHER, NULL);
+    if (!stb_device) {
+        ESP_LOGE(TAG, "Failed to create STB device");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(stb_device, stb_write_cb, NULL);
+    esp_rmaker_device_add_param(stb_device, esp_rmaker_name_param_create("Name", "Set-Top Box"));
+    esp_rmaker_device_add_param(stb_device, esp_rmaker_power_param_create("Power", false));
+
+    /* Channel */
+    esp_rmaker_param_t *channel = esp_rmaker_param_create("Channel", "esp.param.range",
+                                                            esp_rmaker_int(1), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(stb_device, channel);
+
+    /* Play/Pause */
+    esp_rmaker_param_t *play_pause = esp_rmaker_param_create("Play_Pause", "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(stb_device, play_pause);
+
+    /* Guide */
+    esp_rmaker_param_t *guide = esp_rmaker_param_create("Guide", "esp.param.toggle",
+                                                          esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_device_add_param(stb_device, guide);
+
+    esp_rmaker_node_add_device(node, stb_device);
+    ESP_LOGI(TAG, "STB device created");
     return ESP_OK;
 }
 
@@ -268,49 +580,38 @@ static esp_err_t create_ir_remote_device(esp_rmaker_node_t *node)
  * BOOT BUTTON HANDLER (WiFi Reset / Factory Reset)
  * ============================================================================ */
 
-/**
- * @brief Boot button timer callback
- */
 static void boot_button_timer_cb(TimerHandle_t timer)
 {
     uint32_t press_duration = (esp_log_timestamp() - button_press_start);
 
     if (gpio_get_level(GPIO_BOOT_BUTTON) == 0) {
-        /* Button still pressed */
         if (press_duration >= BUTTON_FACTORY_RESET_MS && !factory_reset_triggered) {
-            /* Factory reset */
             ESP_LOGW(TAG, "Factory reset triggered!");
             factory_reset_triggered = true;
             rgb_led_set_status(LED_STATUS_ERROR);
 
             /* Clear all IR codes */
-            ir_clear_all_codes();
+            ir_action_clear_all();
+            ir_ac_clear_state();
 
             /* Reset WiFi and restart */
             esp_rmaker_factory_reset(0, 2);
         }
     } else {
-        /* Button released */
         if (press_duration >= BUTTON_WIFI_RESET_MS && press_duration < BUTTON_FACTORY_RESET_MS) {
-            /* WiFi reset */
             ESP_LOGI(TAG, "WiFi reset triggered");
             rgb_led_set_status(LED_STATUS_ERROR);
             app_wifi_reset();
         }
 
-        /* Stop timer */
         xTimerStop(timer, 0);
         factory_reset_triggered = false;
     }
 }
 
-/**
- * @brief Boot button interrupt handler
- */
 static void IRAM_ATTR boot_button_isr_handler(void *arg)
 {
     if (gpio_get_level(GPIO_BOOT_BUTTON) == 0) {
-        /* Button pressed */
         button_press_start = esp_log_timestamp();
         factory_reset_triggered = false;
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -318,12 +619,8 @@ static void IRAM_ATTR boot_button_isr_handler(void *arg)
     }
 }
 
-/**
- * @brief Initialize boot button handler
- */
 static void init_boot_button(void)
 {
-    /* Configure boot button GPIO */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << GPIO_BOOT_BUTTON),
         .mode = GPIO_MODE_INPUT,
@@ -333,209 +630,15 @@ static void init_boot_button(void)
     };
     gpio_config(&io_conf);
 
-    /* Create timer */
     boot_button_timer = xTimerCreate("boot_btn", pdMS_TO_TICKS(100), pdTRUE,
                                       NULL, boot_button_timer_cb);
 
-    /* Install ISR service and add handler */
     gpio_install_isr_service(0);
     gpio_isr_handler_add(GPIO_BOOT_BUTTON, boot_button_isr_handler, NULL);
 
     ESP_LOGI(TAG, "Boot button initialized (GPIO%d)", GPIO_BOOT_BUTTON);
     ESP_LOGI(TAG, "  - Press 3s: WiFi reset");
     ESP_LOGI(TAG, "  - Press 10s: Factory reset");
-}
-
-/* ============================================================================
- * CONSOLE COMMANDS (for testing)
- * ============================================================================ */
-
-/**
- * @brief Console command: learn <button_id>
- */
-static int cmd_learn(int argc, char **argv)
-{
-    if (argc != 2) {
-        printf("Usage: learn <button_id>\n");
-        printf("Example: learn 0 (Power button)\n");
-        return 1;
-    }
-
-    int button_id = atoi(argv[1]);
-    if (button_id < 0 || button_id >= IR_BTN_MAX) {
-        printf("Error: button_id must be 0-%d\n", IR_BTN_MAX - 1);
-        return 1;
-    }
-
-    printf("Starting IR learning for button %d (%s)...\n",
-           button_id, ir_get_button_name((ir_button_t)button_id));
-
-    rgb_led_set_status(LED_STATUS_LEARNING);
-    current_learning_button = (ir_button_t)button_id;
-
-    esp_err_t err = ir_learn_start((ir_button_t)button_id, IR_LEARNING_TIMEOUT_MS);
-    if (err != ESP_OK) {
-        printf("Error: Failed to start learning: %s\n", esp_err_to_name(err));
-        return 1;
-    }
-
-    printf("Point remote at device and press button...\n");
-    return 0;
-}
-
-/**
- * @brief Console command: transmit <button_id>
- */
-static int cmd_transmit(int argc, char **argv)
-{
-    if (argc != 2) {
-        printf("Usage: transmit <button_id>\n");
-        printf("Example: transmit 0 (Power button)\n");
-        return 1;
-    }
-
-    int button_id = atoi(argv[1]);
-    if (button_id < 0 || button_id >= IR_BTN_MAX) {
-        printf("Error: button_id must be 0-%d\n", IR_BTN_MAX - 1);
-        return 1;
-    }
-
-    printf("Transmitting IR code for button %d (%s)...\n",
-           button_id, ir_get_button_name((ir_button_t)button_id));
-
-    rgb_led_set_status(LED_STATUS_TRANSMITTING);
-    esp_err_t err = ir_transmit_button((ir_button_t)button_id);
-
-    if (err == ESP_OK) {
-        printf("IR code transmitted successfully\n");
-    } else if (err == ESP_ERR_NOT_FOUND) {
-        printf("Error: No learned code for this button\n");
-    } else {
-        printf("Error: Failed to transmit: %s\n", esp_err_to_name(err));
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(200));
-    if (app_wifi_is_connected()) {
-        rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
-    } else {
-        rgb_led_set_status(LED_STATUS_IDLE);
-    }
-
-    return (err == ESP_OK) ? 0 : 1;
-}
-
-/**
- * @brief Console command: list (show all learned buttons)
- */
-static int cmd_list(int argc, char **argv)
-{
-    printf("\n=== Learned IR Buttons ===\n");
-    int count = 0;
-
-    for (int i = 0; i < IR_BTN_MAX; i++) {
-        if (ir_is_learned((ir_button_t)i)) {
-            printf("  [%2d] %s\n", i, ir_get_button_name((ir_button_t)i));
-            count++;
-        }
-    }
-
-    printf("\nTotal learned buttons: %d / %d\n\n", count, IR_BTN_MAX);
-    return 0;
-}
-
-/**
- * @brief Console command: clear <button_id|all>
- */
-static int cmd_clear(int argc, char **argv)
-{
-    if (argc != 2) {
-        printf("Usage: clear <button_id|all>\n");
-        printf("Example: clear 0 (clear Power button)\n");
-        printf("Example: clear all (clear all buttons)\n");
-        return 1;
-    }
-
-    if (strcmp(argv[1], "all") == 0) {
-        printf("Clearing all learned IR codes...\n");
-        esp_err_t err = ir_clear_all_codes();
-        if (err == ESP_OK) {
-            printf("All IR codes cleared successfully\n");
-
-            /* Update all "Learned" status parameters */
-            for (int i = 0; i < IR_BTN_MAX; i++) {
-                if (button_params[i * 3 + 2]) {
-                    esp_rmaker_param_update_and_report(button_params[i * 3 + 2], esp_rmaker_bool(false));
-                }
-            }
-        } else {
-            printf("Error: Failed to clear codes: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-    } else {
-        int button_id = atoi(argv[1]);
-        if (button_id < 0 || button_id >= IR_BTN_MAX) {
-            printf("Error: button_id must be 0-%d or 'all'\n", IR_BTN_MAX - 1);
-            return 1;
-        }
-
-        printf("Clearing IR code for button %d (%s)...\n",
-               button_id, ir_get_button_name((ir_button_t)button_id));
-
-        esp_err_t err = ir_clear_code((ir_button_t)button_id);
-        if (err == ESP_OK) {
-            printf("IR code cleared successfully\n");
-
-            /* Update "Learned" status parameter */
-            if (button_params[button_id * 3 + 2]) {
-                esp_rmaker_param_update_and_report(button_params[button_id * 3 + 2], esp_rmaker_bool(false));
-            }
-        } else {
-            printf("Error: Failed to clear code: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-/**
- * @brief Register console commands
- */
-static void register_console_commands(void)
-{
-    const esp_console_cmd_t learn_cmd = {
-        .command = "learn",
-        .help = "Start IR learning for a button",
-        .hint = "<button_id>",
-        .func = &cmd_learn,
-    };
-    esp_console_cmd_register(&learn_cmd);
-
-    const esp_console_cmd_t transmit_cmd = {
-        .command = "transmit",
-        .help = "Transmit learned IR code",
-        .hint = "<button_id>",
-        .func = &cmd_transmit,
-    };
-    esp_console_cmd_register(&transmit_cmd);
-
-    const esp_console_cmd_t list_cmd = {
-        .command = "list",
-        .help = "List all learned IR buttons",
-        .hint = NULL,
-        .func = &cmd_list,
-    };
-    esp_console_cmd_register(&list_cmd);
-
-    const esp_console_cmd_t clear_cmd = {
-        .command = "clear",
-        .help = "Clear learned IR code(s)",
-        .hint = "<button_id|all>",
-        .func = &cmd_clear,
-    };
-    esp_console_cmd_register(&clear_cmd);
-
-    ESP_LOGI(TAG, "Console commands registered");
 }
 
 /* ============================================================================
@@ -547,9 +650,9 @@ void app_main(void)
     esp_err_t err = ESP_OK;
 
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  Universal IR Remote Control");
+    ESP_LOGI(TAG, "  Universal IR Remote Control v3.0");
+    ESP_LOGI(TAG, "  Multi-Device Architecture");
     ESP_LOGI(TAG, "  Firmware: %s", FIRMWARE_VERSION);
-    ESP_LOGI(TAG, "  Model: %s", MODEL);
     ESP_LOGI(TAG, "========================================");
 
     /* Initialize NVS */
@@ -576,6 +679,14 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing IR control...");
     ESP_ERROR_CHECK(ir_control_init());
 
+    /* Initialize action mapping system */
+    ESP_LOGI(TAG, "Initializing action mapping system...");
+    ESP_ERROR_CHECK(ir_action_init());
+
+    /* Initialize AC state management */
+    ESP_LOGI(TAG, "Initializing AC state management...");
+    ESP_ERROR_CHECK(ir_ac_state_init());
+
     /* Register IR callbacks */
     ir_callbacks_t ir_callbacks = {
         .learn_success_cb = ir_learn_success_callback,
@@ -584,10 +695,6 @@ void app_main(void)
         .user_arg = NULL
     };
     ESP_ERROR_CHECK(ir_register_callbacks(&ir_callbacks));
-
-    /* Load saved IR codes from NVS */
-    ESP_LOGI(TAG, "Loading saved IR codes...");
-    ir_load_all_codes();
 
     /* Initialize boot button */
     init_boot_button();
@@ -603,8 +710,13 @@ void app_main(void)
         abort();
     }
 
-    /* Create IR Remote device with all buttons */
-    ESP_ERROR_CHECK(create_ir_remote_device(node));
+    /* Create all devices */
+    ESP_LOGI(TAG, "Creating RainMaker devices...");
+    ESP_ERROR_CHECK(create_tv_device(node));
+    ESP_ERROR_CHECK(create_ac_device(node));
+    ESP_ERROR_CHECK(create_stb_device(node));
+    ESP_ERROR_CHECK(create_speaker_device(node));
+    ESP_ERROR_CHECK(create_fan_device(node));
 
     /* Enable OTA */
     esp_rmaker_ota_enable_default();
@@ -625,11 +737,10 @@ void app_main(void)
 
     /* Initialize console for debugging */
     esp_rmaker_console_init();
-    register_console_commands();
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  Universal IR Remote Ready!");
+    ESP_LOGI(TAG, "  Devices: TV, AC, STB, Speaker, Fan");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Use RainMaker app to provision and control");
-    ESP_LOGI(TAG, "Console commands: learn, transmit, list, clear");
 }

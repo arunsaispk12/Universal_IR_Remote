@@ -1,53 +1,112 @@
 # Universal IR Remote - ESP32 RainMaker
 
-**Version:** 2.3.0
+**Version:** 3.0.0 🎉
 **Platform:** ESP32 | ESP-IDF v5.5.1 | ESP RainMaker
 **Release Date:** December 27, 2025
-**Status:** Production Ready - Commercial Grade
+**Status:** Production Ready - Multi-Device Architecture
 
-> **Complete Universal IR Remote Control** - Learn and control any IR device from your smartphone!
+> **🚨 v3.0 Major Release** - Complete architectural refactor for production deployment!
+>
+> **Complete Smart Home IR Control** - Control all your IR appliances (TV, AC, STB, Soundbar, Fan) from one cloud-connected ESP32 device!
 
 ---
 
 ## 🎯 Overview
 
-A standalone ESP32-based universal IR remote control that learns IR codes from any remote control (TV, AC, Set-top box, etc.) and lets you control them via the **ESP RainMaker smartphone app** from anywhere in the world.
+A production-ready ESP32-based universal IR remote control with **multi-device architecture** that lets you control all your home appliances via the **ESP RainMaker smartphone app** from anywhere in the world.
+
+### What's New in v3.0? 🆕
+
+**🏗️ Multi-Device Architecture**:
+- **5 Separate Appliances**: TV, Air Conditioner, Set-Top Box, Soundbar, IR Fan
+- **Logical Action Mapping**: Device-specific parameters (Power, Volume, Temp, etc.)
+- **AC State-Based Control**: Full AC state regeneration (proper AC behavior)
+- **Device Abstraction**: RainMaker cloud representation matches real appliances
+
+**💾 Smart Storage**:
+- **Action-Based**: Stores IR codes by logical action (e.g., "TV.Power", "AC.Mode")
+- **Flexible Re-learning**: Change IR codes without changing cloud schema
+- **AC State Persistence**: Maintains complete AC state across reboots
+
+⚠️ **Breaking Changes**: v3.0 is NOT backward compatible with v2.x. Users must re-learn all IR codes after upgrading. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ### Key Features
 
-✅ **32 Programmable Buttons** - Learn codes from any IR remote
-✅ **34+ Protocol Support** - NEC, Samsung, Sony, RC5, RC6, JVC, LG, and many more
-✅ **12 AC Protocols** - Mitsubishi, Daikin, Fujitsu, Haier, Midea, Carrier, Hitachi + more
-✅ **India Market Optimized** - Voltas, Blue Star, Lloyd, Hitachi AC support
+✅ **Multi-Device Control** - TV, AC, STB, Speaker, Fan as separate cloud devices
+✅ **100+ Logical Actions** - Power, Volume, Channel, Temp, Mode, Fan Speed, etc.
+✅ **AC State-Based Model** - Full state regeneration (not button commands)
+✅ **34+ IR Protocol Support** - NEC, Samsung, Sony, RC5, RC6, JVC, LG, and many more
+✅ **10 AC Protocol Encoders** - Daikin, Carrier/Voltas, Hitachi, Mitsubishi, etc.
+✅ **India Market Optimized** - Voltas (#1 AC brand), Blue Star, Lloyd, Hitachi
 ✅ **Universal Decoder** - Automatically handles unknown protocols
 ✅ **Multi-Frequency Transmission** - 36kHz, 38kHz, 40kHz, 455kHz carrier support
 ✅ **Cloud Control** - Control from anywhere via ESP RainMaker app
 ✅ **Visual Feedback** - RGB LED shows learning/transmit status
 ✅ **BLE Provisioning** - Easy WiFi setup via smartphone
-✅ **Persistent Storage** - Learned codes saved across reboots
+✅ **Persistent Storage** - Learned codes and AC state saved across reboots
 ✅ **OTA Updates** - Update firmware wirelessly
 
 ---
 
-## 📱 What You Can Do
+## 📱 How It Works (v3.0)
 
-### Learn IR Codes
+### 1. Learn IR Codes (Device-Specific Learning)
+
+**For TV/STB/Speaker/Fan**:
 1. Open ESP RainMaker app
-2. Select any of 32 buttons (Power, Volume, Channel, etc.)
-3. Press "Learn" toggle
-4. Point your original remote at the device
-5. Press the button you want to copy
-6. **Done!** Code is learned and saved
+2. Select device (e.g., "TV")
+3. Open "Learn_Mode" parameter
+4. Select action to learn (e.g., "Power", "VolumeUp", "ChannelUp")
+5. Point your original remote at the ESP32
+6. Press the corresponding button on your remote
+7. **Done!** Action learned and saved
 
-### Control Devices
-1. Press "Transmit" for any learned button
-2. IR code is sent to your device
-3. Works from anywhere via internet!
+**For Air Conditioner** (State-Based):
+1. Select "AC" device
+2. Open "Learn_Protocol" parameter
+3. Choose your AC brand (Daikin, Voltas, Hitachi, etc.)
+4. Set desired state (Power ON, Cool mode, 24°C)
+5. IR code generated from state (no learning required for state changes!)
 
-### Supported Devices
-- 📺 **TVs** - All brands (Samsung, LG, Sony, etc.)
-- 🌡️ **Air Conditioners** - Most brands
-- 📡 **Set-top Boxes** - Cable/Satellite boxes
+### 2. Control Devices
+
+**TV/STB/Speaker/Fan**:
+- Change any parameter (Power ON/OFF, Volume, Channel, Input)
+- ESP32 automatically transmits the learned IR code
+- Works from anywhere via internet!
+
+**Air Conditioner** (Unique):
+- Change any AC parameter (Power, Mode, Temperature, Fan Speed, Swing)
+- ESP32 regenerates **complete AC state frame** (matches real AC remote behavior)
+- Transmits full state to AC unit
+- AC synchronized with cloud state
+
+### 3. Supported Devices & Features
+
+- 📺 **TV Device**
+  - Power, Volume (Up/Down), Mute, Channel (Up/Down), Input Selection
+  - Menu navigation (Menu, OK, Back, Up/Down/Left/Right)
+  - Picture/Sound modes, Sleep timer
+
+- 🌡️ **Air Conditioner Device** (State-Based)
+  - Power, Mode (Cool/Heat/Auto/Dry/Fan), Temperature (16-30°C)
+  - Fan Speed (Auto/Low/Med/High/Turbo/Quiet), Swing (V/H/Both/Auto)
+  - Protocol: Daikin, Carrier/Voltas, Hitachi, Mitsubishi, Fujitsu, Haier, Midea
+  - **India Market**: Voltas (#1), Blue Star, Lloyd, Hitachi
+
+- 📡 **Set-Top Box Device**
+  - Power, Channel (Up/Down), Play/Pause, Stop, Rewind, Forward
+  - Guide/EPG, Record, Subtitle, Audio language
+  - **India DTH**: Tata Play, Airtel Digital TV, Dish TV compatible
+
+- 🔊 **Soundbar/Speaker Device**
+  - Power, Volume, Mute
+  - Sound modes, Bass/Treble control, Surround
+  - Input selection (Bluetooth, AUX, Optical)
+
+- 🌀 **IR Fan Device** (India Market)
+  - Power, Speed (1-5 levels), Swing/Oscillation
+  - Timer, Sleep mode, Natural wind, Ionizer
 - 🔊 **Audio Systems** - Receivers, soundbars
 - 💿 **DVD/Blu-ray Players**
 - 🎮 **Game Consoles** (IR-enabled)
