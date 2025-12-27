@@ -1,8 +1,9 @@
 # Universal IR Remote - ESP32 RainMaker
 
-**Version:** 2.2.0
+**Version:** 2.3.0
 **Platform:** ESP32 | ESP-IDF v5.5.1 | ESP RainMaker
 **Release Date:** December 27, 2025
+**Status:** Production Ready - Commercial Grade
 
 > **Complete Universal IR Remote Control** - Learn and control any IR device from your smartphone!
 
@@ -586,23 +587,43 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
-## 📞 Support
+## 📚 Documentation
 
-**Project Location:**
-```
-C:\Users\JYOTH\Desktop\ESP_IDF\Project_SHA\Universal_IR_Remote
-```
+Complete technical documentation is available in the [`docs/`](docs/) folder:
 
-**Documentation:**
-- See `docs/` folder for detailed guides
-- Check component README files for API reference
+### User Guides
+- **[Hardware Wiring Guide](docs/HARDWARE_WIRING_GUIDE.md)** - Complete hardware setup (1-20m cable runs)
+- **[Commercial Features Guide](docs/COMMERCIAL_GRADE_FEATURES.md)** - Reliability features (99.9%+ accuracy)
+- **[CHANGELOG](CHANGELOG.md)** - Version history and release notes
 
-**Getting Help:**
-1. Read troubleshooting section
-2. Check serial monitor logs
-3. Review wiring connections
-4. Test with console commands
+### Technical References
+- **[Protocol List](docs/PROTOCOL_LIST.md)** - All 34+ supported protocols
+- **[Protocol Compliance](docs/PROTOCOL_COMPLIANCE_CHECKLIST.md)** - 100% compliance audit
+- **[India Market Analysis](docs/INDIA_MARKET_COMPLIANCE.md)** - Market coverage report
+- **[Implementation Summary](docs/IMPLEMENTATION_SUMMARY.md)** - Technical architecture
+- **[Memory Analysis](docs/MEMORY_IMPACT_ANALYSIS.md)** - Resource usage (~950KB flash)
+
+### Advanced Topics
+- **[AC State Architecture](docs/AC_STATE_ARCHITECTURE.md)** - Future AC smart control roadmap
+- **[Release Notes v2.3.0](docs/RELEASE_NOTES_v2.3.0.md)** - Latest release details
+
+**Total Documentation**: 47,200+ words across 9 comprehensive guides
 
 ---
 
-**Made with ❤️ for ESP32 IoT | v2.2.0 Universal IR Remote - 34+ Protocols | India Market Optimized 🇮🇳**
+## 📞 Support
+
+**Getting Help:**
+1. Check [Hardware Wiring Guide](docs/HARDWARE_WIRING_GUIDE.md) for troubleshooting
+2. Review [CHANGELOG](CHANGELOG.md) for known issues
+3. Read serial monitor logs for detailed errors
+4. Verify wiring connections match diagrams
+
+**Resources:**
+- Documentation Index: [`docs/README.md`](docs/README.md)
+- API Reference: See component header files
+- Examples: Check component implementations
+
+---
+
+**Made with ❤️ for ESP32 IoT | v2.3.0 Universal IR Remote - 34+ Protocols | Commercial Grade Reliability 🚀**
