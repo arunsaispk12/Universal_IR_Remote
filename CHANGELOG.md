@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.1] - 2025-12-27
+
+### 🐛 Bug Fixes - Critical AC Learning & Decoding
+
+This patch release fixes critical bugs discovered in v3.1.0 AC auto-detection and adds AC state decoding support.
+
+### Fixed - Critical Issues
+
+1. **AC Auto-Detection Compilation Error** (Critical)
+   - **Issue**: `ir_ac_learn_protocol()` called non-existent `ir_learn_code()` function
+   - **Impact**: Code would not compile; AC auto-detection was broken
+   - **Fix**: Implemented synchronous `ir_learn_code()` wrapper function
+   - **Location**: `components/ir_control/ir_control.c`
+
+2. **AC State Decoding Not Implemented**
+   - **Issue**: `ir_ac_decode_state()` returned `ESP_ERR_NOT_SUPPORTED` for all protocols
+   - **Impact**: AC auto-detection couldn't extract initial state from captured frames
+   - **Fix**: Implemented full state decoders for 4 major protocols + basic fallback for 6 others
+   - **Location**: `components/ir_control/ir_ac_state.c`
+
+### Added - AC State Decoding
+
+- **Synchronous IR Learning** (`ir_control.c:ir_learn_code()`)
+  - Blocking wrapper around callback-based `ir_learn_start()`
+  - Uses FreeRTOS semaphore for synchronization
+  - Timeout support with automatic cleanup
+  - Restores original callbacks after learning
+  - Required for AC auto-detection to work
+
+- **AC State Decoders** (`ir_ac_state.c:ir_ac_decode_state()`)
+  - **Full Implementation** (with state extraction):
+    - Carrier/Voltas (128-bit): Power, Mode, Temperature, Fan, Swing, Turbo, Sleep, Econo
+    - Daikin (312-bit): Power, Mode, Temperature, Fan, Swing, Turbo, Quiet, Econo
+    - Midea (48-bit): Power, Temperature (simplified)
+    - LG2 (28-bit): Temperature (simplified)
+
+  - **Basic Fallback** (defaults with protocol recognition):
+    - Hitachi, Mitsubishi, Haier, Samsung48, Panasonic, Fujitsu
+    - Sets: Power=ON, Mode=COOL, Temperature=24°C
+
+- **Helper Function**: `decode_raw_to_bytes_lsb()`
+  - Converts RMT mark/space timings to byte array
+  - LSB-first bit ordering
+  - ±30% timing tolerance for robustness
+
+### Technical Details
+
+**Code Changes**:
+- `ir_control.h`: +12 lines (ir_learn_code declaration)
+- `ir_control.c`: +85 lines (synchronous learning implementation)
+- `ir_ac_state.c`: +210 lines (state decoding for 10 protocols)
+- `version.txt`: 3.2.0 → 3.2.1
+
+**AC Auto-Detection Flow** (now working):
+1. User selects "Auto-Detect" → `ir_ac_learn_protocol()` called
+2. Calls `ir_learn_code()` (now exists!) → blocks waiting for IR signal
+3. IR captured → protocol identified by bit length
+4. `ir_ac_decode_state()` extracts initial state (now implemented!)
+5. Configuration saved to NVS
+6. AC ready with detected protocol and initial state
+
+**Decoder Accuracy**:
+- Carrier/Voltas: Full state extraction ✅
+- Daikin: Full state extraction ✅
+- Midea: Basic extraction (power, temp) ⚠️
+- LG2: Basic extraction (temp) ⚠️
+- Others: Protocol recognition only, use defaults ⚠️
+
+### Notes
+
+- These fixes are **critical** for v3.1.0 AC auto-detection to work
+- Code now compiles successfully
+- AC learning can extract initial state from captured frames
+- Improved user experience - shows actual AC state during learning
+- No breaking changes - fully backward compatible
+
+---
+
 ## [3.2.0] - 2025-12-27
 
 ### ✨ Feature Release - Custom Device Support

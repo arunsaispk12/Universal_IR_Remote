@@ -1437,6 +1437,88 @@ bool ir_is_learning(void)
     return learning_mode;
 }
 
+/* Synchronous learning support */
+static SemaphoreHandle_t learn_sync_sem = NULL;
+static ir_code_t *learn_sync_code = NULL;
+static esp_err_t learn_sync_result = ESP_OK;
+
+static void learn_sync_success_cb(ir_button_t button, ir_code_t *code, void *arg)
+{
+    if (learn_sync_code && code) {
+        memcpy(learn_sync_code, code, sizeof(ir_code_t));
+        learn_sync_result = ESP_OK;
+    }
+    if (learn_sync_sem) {
+        xSemaphoreGive(learn_sync_sem);
+    }
+}
+
+static void learn_sync_fail_cb(ir_button_t button, void *arg)
+{
+    learn_sync_result = ESP_ERR_TIMEOUT;
+    if (learn_sync_sem) {
+        xSemaphoreGive(learn_sync_sem);
+    }
+}
+
+esp_err_t ir_learn_code(uint32_t timeout_ms, ir_code_t *code)
+{
+    if (!code) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (timeout_ms == 0) {
+        timeout_ms = IR_LEARN_TIMEOUT_MS;
+    }
+
+    /* Create semaphore if not exists */
+    if (learn_sync_sem == NULL) {
+        learn_sync_sem = xSemaphoreCreateBinary();
+        if (learn_sync_sem == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    /* Save original callbacks */
+    ir_callbacks_t original_callbacks = callbacks;
+
+    /* Set temporary callbacks for synchronous operation */
+    ir_callbacks_t sync_callbacks = {
+        .learn_success_cb = learn_sync_success_cb,
+        .learn_fail_cb = learn_sync_fail_cb,
+        .receive_cb = NULL,
+        .user_arg = NULL
+    };
+
+    learn_sync_code = code;
+    learn_sync_result = ESP_FAIL;
+    callbacks = sync_callbacks;
+
+    /* Start learning */
+    esp_err_t err = ir_learn_start(IR_BTN_CUSTOM_1, timeout_ms);
+    if (err != ESP_OK) {
+        callbacks = original_callbacks;
+        return err;
+    }
+
+    /* Wait for callback with timeout */
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms + 1000); // Extra 1s margin
+    if (xSemaphoreTake(learn_sync_sem, ticks) == pdTRUE) {
+        /* Callback was triggered */
+        err = learn_sync_result;
+    } else {
+        /* Timeout */
+        err = ESP_ERR_TIMEOUT;
+        ir_learn_stop();
+    }
+
+    /* Restore original callbacks */
+    callbacks = original_callbacks;
+    learn_sync_code = NULL;
+
+    return err;
+}
+
 /* ============================================================================
  * PUBLIC API - TRANSMISSION
  * ============================================================================ */

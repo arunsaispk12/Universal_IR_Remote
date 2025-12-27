@@ -410,16 +410,212 @@ esp_err_t ir_ac_encode_state(const ac_state_t *state, ir_code_t *code)
     return err;
 }
 
+/**
+ * @brief Decode RMT raw data to byte array (LSB-first)
+ */
+static esp_err_t decode_raw_to_bytes_lsb(const uint16_t *raw_data, size_t num_marks_spaces,
+                                           uint16_t mark_us, uint16_t one_space_us, uint16_t zero_space_us,
+                                           uint8_t *bytes, size_t num_bytes)
+{
+    if (!raw_data || !bytes || num_marks_spaces < num_bytes * 16) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t idx = 0;
+    for (size_t byte_idx = 0; byte_idx < num_bytes; byte_idx++) {
+        uint8_t byte = 0;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            /* Skip mark (should be consistent) */
+            idx++;
+            /* Check space duration */
+            uint16_t space = raw_data[idx++];
+
+            /* Tolerance: ±30% */
+            if (space > (one_space_us * 0.7) && space < (one_space_us * 1.3)) {
+                byte |= (1 << bit);  // LSB first
+            }
+            /* If not one, assume zero (already 0 in byte) */
+        }
+        bytes[byte_idx] = byte;
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t ir_ac_decode_state(const ir_code_t *code, ac_state_t *state)
 {
     if (!code || !state) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* TODO: Implement protocol-specific decoders */
-    /* For now, return not supported */
-    ESP_LOGW(TAG, "AC state decoding not yet implemented");
-    return ESP_ERR_NOT_SUPPORTED;
+    /* Initialize state to defaults */
+    ir_ac_get_default_state(state);
+
+    /* Check if protocol is an AC protocol */
+    switch (code->protocol) {
+        case IR_PROTOCOL_CARRIER: {
+            /* Carrier/Voltas: 128-bit (16 bytes) */
+            if (code->bits < 120) {
+                ESP_LOGW(TAG, "Carrier frame too short: %d bits", code->bits);
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint8_t data[16] = {0};
+            if (decode_raw_to_bytes_lsb(code->raw_data, code->raw_length, 560, 1690, 560, data, 16) != ESP_OK) {
+                return ESP_FAIL;
+            }
+
+            /* Extract power and mode from byte 3 */
+            state->power = (data[3] & 0x01) ? true : false;
+            uint8_t mode_bits = (data[3] >> 1) & 0x07;
+            switch (mode_bits) {
+                case 0: state->mode = AC_MODE_AUTO; break;
+                case 1: state->mode = AC_MODE_COOL; break;
+                case 2: state->mode = AC_MODE_DRY; break;
+                case 3: state->mode = AC_MODE_FAN; break;
+                case 4: state->mode = AC_MODE_HEAT; break;
+                default: state->mode = AC_MODE_COOL; break;
+            }
+
+            /* Temperature (byte 4, offset encoding) */
+            state->temperature = data[4] + 16;
+            if (state->temperature < AC_TEMP_MIN) state->temperature = AC_TEMP_MIN;
+            if (state->temperature > AC_TEMP_MAX) state->temperature = AC_TEMP_MAX;
+
+            /* Fan speed (byte 5) */
+            state->fan_speed = (ac_fan_speed_t)(data[5] & 0x03);
+
+            /* Swing (byte 6) */
+            state->swing = (data[6] & 0x01) ? AC_SWING_VERTICAL : AC_SWING_OFF;
+
+            /* Extended features */
+            state->turbo = (data[7] & 0x01) ? true : false;
+            state->sleep = (data[8] & 0x01) ? true : false;
+            state->econo = (data[9] & 0x01) ? true : false;
+
+            state->protocol = IR_PROTOCOL_CARRIER;
+            ESP_LOGI(TAG, "Carrier decoded: Power=%d, Mode=%d, Temp=%d°C",
+                     state->power, state->mode, state->temperature);
+            return ESP_OK;
+        }
+
+        case IR_PROTOCOL_DAIKIN: {
+            /* Daikin: 312-bit (19 bytes main frame) */
+            if (code->bits < 300) {
+                ESP_LOGW(TAG, "Daikin frame too short: %d bits", code->bits);
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint8_t data[19] = {0};
+            if (decode_raw_to_bytes_lsb(code->raw_data, code->raw_length, 428, 1280, 428, data, 19) != ESP_OK) {
+                return ESP_FAIL;
+            }
+
+            /* Extract power and mode from byte 5 */
+            state->power = (data[5] & 0x01) ? true : false;
+            uint8_t mode_bits = (data[5] >> 4) & 0x0F;
+            switch (mode_bits) {
+                case 0: state->mode = AC_MODE_FAN; break;
+                case 2: state->mode = AC_MODE_DRY; break;
+                case 3: state->mode = AC_MODE_COOL; break;
+                case 4: state->mode = AC_MODE_HEAT; break;
+                case 7: state->mode = AC_MODE_AUTO; break;
+                default: state->mode = AC_MODE_COOL; break;
+            }
+
+            /* Temperature (byte 6, scaled by 2) */
+            state->temperature = data[6] / 2;
+            if (state->temperature < AC_TEMP_MIN) state->temperature = AC_TEMP_MIN;
+            if (state->temperature > AC_TEMP_MAX) state->temperature = AC_TEMP_MAX;
+
+            /* Fan speed (byte 8, upper nibble) */
+            uint8_t fan_bits = (data[8] >> 4) & 0x0F;
+            switch (fan_bits) {
+                case 3: state->fan_speed = AC_FAN_AUTO; break;
+                case 4: state->fan_speed = AC_FAN_LOW; break;
+                case 5: state->fan_speed = AC_FAN_MEDIUM; break;
+                case 6: state->fan_speed = AC_FAN_HIGH; break;
+                case 7: state->fan_speed = AC_FAN_TURBO; break;
+                default: state->fan_speed = AC_FAN_AUTO; break;
+            }
+
+            /* Swing (byte 9) */
+            state->swing = (data[9] == 0xF1) ? AC_SWING_VERTICAL : AC_SWING_OFF;
+
+            /* Advanced features (byte 13) */
+            state->turbo = (data[13] & 0x01) ? true : false;
+            state->quiet = (data[13] & 0x02) ? true : false;
+            state->econo = (data[13] & 0x04) ? true : false;
+
+            state->protocol = IR_PROTOCOL_DAIKIN;
+            ESP_LOGI(TAG, "Daikin decoded: Power=%d, Mode=%d, Temp=%d°C",
+                     state->power, state->mode, state->temperature);
+            return ESP_OK;
+        }
+
+        case IR_PROTOCOL_MIDEA: {
+            /* Midea: 48-bit (6 bytes) */
+            if (code->bits < 40) {
+                ESP_LOGW(TAG, "Midea frame too short: %d bits", code->bits);
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint8_t data[6] = {0};
+            if (decode_raw_to_bytes_lsb(code->raw_data, code->raw_length, 560, 1690, 560, data, 6) != ESP_OK) {
+                return ESP_FAIL;
+            }
+
+            /* Basic decoding for Midea (simplified) */
+            state->power = (data[1] & 0x20) ? true : false;
+            state->mode = AC_MODE_COOL;  /* Default mode */
+            state->temperature = ((data[1] & 0x0F) + 17);  /* Simplified temp extraction */
+            state->protocol = IR_PROTOCOL_MIDEA;
+
+            ESP_LOGI(TAG, "Midea decoded: Power=%d, Temp=%d°C", state->power, state->temperature);
+            return ESP_OK;
+        }
+
+        case IR_PROTOCOL_LG2: {
+            /* LG2: 28-bit (4 bytes) */
+            if (code->bits < 24) {
+                ESP_LOGW(TAG, "LG2 frame too short: %d bits", code->bits);
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint8_t data[4] = {0};
+            if (decode_raw_to_bytes_lsb(code->raw_data, code->raw_length, 560, 1690, 560, data, 4) != ESP_OK) {
+                return ESP_FAIL;
+            }
+
+            /* Basic LG2 decoding (simplified) */
+            state->power = true;  /* Assume ON when frame is sent */
+            state->mode = AC_MODE_COOL;
+            state->temperature = ((data[1] & 0x0F) + 18);  /* Simplified */
+            state->protocol = IR_PROTOCOL_LG2;
+
+            ESP_LOGI(TAG, "LG2 decoded: Temp=%d°C", state->temperature);
+            return ESP_OK;
+        }
+
+        case IR_PROTOCOL_HITACHI:
+        case IR_PROTOCOL_MITSUBISHI:
+        case IR_PROTOCOL_HAIER:
+        case IR_PROTOCOL_SAMSUNG48:
+        case IR_PROTOCOL_PANASONIC:
+        case IR_PROTOCOL_FUJITSU:
+            /* These protocols are recognized but detailed decoding not implemented */
+            ESP_LOGW(TAG, "AC decoder for %s not fully implemented - using defaults",
+                     ir_get_protocol_name(code->protocol));
+            state->protocol = code->protocol;
+            state->power = true;  /* Assume ON */
+            state->mode = AC_MODE_COOL;
+            state->temperature = AC_TEMP_DEFAULT;
+            return ESP_OK;
+
+        default:
+            ESP_LOGW(TAG, "Protocol %s is not an AC protocol", ir_get_protocol_name(code->protocol));
+            return ESP_ERR_NOT_SUPPORTED;
+    }
 }
 
 esp_err_t ir_ac_transmit_state(void)

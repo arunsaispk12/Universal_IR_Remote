@@ -253,6 +253,18 @@ esp_err_t ir_learn_stop(void);
  */
 bool ir_is_learning(void);
 
+/**
+ * @brief Learn IR code synchronously (blocking)
+ *
+ * This is a blocking wrapper around ir_learn_start() for use cases that need
+ * synchronous learning (e.g., AC protocol auto-detection).
+ *
+ * @param timeout_ms Learning timeout in milliseconds
+ * @param code Output buffer for captured IR code (must be pre-allocated)
+ * @return ESP_OK on success, ESP_ERR_TIMEOUT on timeout, ESP_FAIL on other errors
+ */
+esp_err_t ir_learn_code(uint32_t timeout_ms, ir_code_t *code);
+
 /* ============================================================================
  * TRANSMISSION
  * ============================================================================ */
