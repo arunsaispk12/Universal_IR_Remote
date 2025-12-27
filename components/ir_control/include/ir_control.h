@@ -33,11 +33,47 @@ extern "C" {
 
 /**
  * @brief IR Protocol Types
+ *
+ * Extended protocol support - ported from Arduino-IRremote library
+ * Supports 25+ IR protocols for maximum device compatibility
  */
 typedef enum {
     IR_PROTOCOL_UNKNOWN = 0,    // Must be 0 for memset() initialization
+
+    // Standard protocols (existing - backward compatible)
     IR_PROTOCOL_NEC,            // NEC protocol (standard TV/AC remotes)
     IR_PROTOCOL_SAMSUNG,        // Samsung protocol variant
+
+    // Extended protocols - Common consumer devices
+    IR_PROTOCOL_SONY,           // Sony SIRC (12/15/20-bit, 40kHz carrier)
+    IR_PROTOCOL_JVC,            // JVC protocol (headerless repeats)
+    IR_PROTOCOL_RC5,            // Philips RC5 (bi-phase, toggle bit)
+    IR_PROTOCOL_RC6,            // Philips RC6 (bi-phase, toggle bit)
+    IR_PROTOCOL_LG,             // LG protocol (28-bit with checksum)
+    IR_PROTOCOL_DENON,          // Denon protocol (15-bit with parity)
+    IR_PROTOCOL_SHARP,          // Sharp protocol (same as Denon)
+    IR_PROTOCOL_PANASONIC,      // Panasonic/Kaseikyo (48-bit)
+    IR_PROTOCOL_KASEIKYO,       // Kaseikyo (generic Panasonic variant)
+
+    // Brand-specific variants
+    IR_PROTOCOL_APPLE,          // Apple remotes (NEC variant)
+    IR_PROTOCOL_ONKYO,          // Onkyo AV receivers (NEC variant)
+    IR_PROTOCOL_SAMSUNG48,      // Samsung 48-bit (for AC units)
+    IR_PROTOCOL_SAMSUNGLG,      // Samsung-LG hybrid
+    IR_PROTOCOL_LG2,            // LG variant for air conditioners
+
+    // Exotic protocols (less common)
+    IR_PROTOCOL_WHYNTER,        // Whynter portable AC
+    IR_PROTOCOL_LEGO_PF,        // Lego Power Functions
+    IR_PROTOCOL_MAGIQUEST,      // MagiQuest wands
+    IR_PROTOCOL_BOSEWAVE,       // Bose Wave radios
+    IR_PROTOCOL_BANG_OLUFSEN,   // Bang & Olufsen (455kHz carrier!)
+    IR_PROTOCOL_FAST,           // FAST protocol
+
+    // Universal decoders
+    IR_PROTOCOL_PULSE_DISTANCE, // Generic pulse distance decoder result
+    IR_PROTOCOL_PULSE_WIDTH,    // Generic pulse width decoder result
+
     IR_PROTOCOL_RAW             // Raw timing data (fallback for unknown protocols)
 } ir_protocol_t;
 
@@ -45,14 +81,35 @@ typedef enum {
  * @brief IR Code Structure
  *
  * Contains protocol-specific data and raw timing information
+ * Extended to support all protocols while maintaining backward compatibility
  */
 typedef struct {
+    // Original fields (backward compatible - do not reorder!)
     ir_protocol_t protocol;     // Protocol type
-    uint32_t data;              // NEC/Samsung: 32-bit command+address
-    uint16_t bits;              // Number of bits (typically 32)
+    uint32_t data;              // NEC/Samsung: 32-bit command+address (legacy field, still used)
+    uint16_t bits;              // Number of bits (typically 32, can be 12-56)
     uint16_t *raw_data;         // RAW protocol: pulse/space timing array
     uint16_t raw_length;        // RAW protocol: number of timing elements
+
+    // Extended fields (new - added for multi-protocol support)
+    uint16_t address;           // Device/manufacturer address field
+    uint16_t command;           // Command/button code field
+    uint8_t flags;              // Status flags (repeat, toggle, parity, etc.)
 } ir_code_t;
+
+/**
+ * @brief IR Code Flags
+ *
+ * Status flags for decoded IR codes
+ */
+#define IR_FLAG_NONE            0x00  // No flags set
+#define IR_FLAG_REPEAT          0x01  // Frame is a repeat (gap < repeat period)
+#define IR_FLAG_AUTO_REPEAT     0x02  // Protocol has mandatory repeat frame
+#define IR_FLAG_PARITY_FAILED   0x04  // Checksum/parity validation failed
+#define IR_FLAG_TOGGLE_BIT      0x08  // RC5/RC6 toggle bit is set
+#define IR_FLAG_EXTRA_INFO      0x10  // Extra info available (e.g. Kaseikyo vendor ID)
+#define IR_FLAG_WAS_OVERFLOW    0x40  // Buffer overflow occurred
+#define IR_FLAG_MSB_FIRST       0x80  // Data transmitted MSB first (vs LSB first)
 
 /**
  * @brief Universal Remote Button Definitions (32 buttons)

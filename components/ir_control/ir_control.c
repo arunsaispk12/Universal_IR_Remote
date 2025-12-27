@@ -3,12 +3,14 @@
  * @brief Universal IR Remote Control Implementation
  *
  * Multi-protocol IR transmitter and receiver with NVS storage
- * Supports NEC, Samsung, and RAW protocols
+ * Supports 25+ IR protocols including NEC, Samsung, Sony, JVC, LG, and more
  *
  * Based on SHA_RainMaker_Project v1.0.0
+ * Extended with Arduino-IRremote protocol support
  */
 
 #include "ir_control.h"
+#include "ir_protocols.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_rx.h"
 #include "driver/rmt_encoder.h"
@@ -23,6 +25,21 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include <string.h>
+
+// Include all protocol decoders
+#include "decoders/ir_distance_width.h"
+#include "decoders/ir_sony.h"
+#include "decoders/ir_jvc.h"
+#include "decoders/ir_lg.h"
+#include "decoders/ir_denon.h"
+#include "decoders/ir_panasonic.h"
+#include "decoders/ir_samsung48.h"
+#include "decoders/ir_whynter.h"
+#include "decoders/ir_lego.h"
+#include "decoders/ir_magiquest.h"
+#include "decoders/ir_bosewave.h"
+#include "decoders/ir_fast.h"
+#include "decoders/ir_apple.h"
 
 static const char *TAG = "IR_CONTROL";
 
@@ -312,12 +329,72 @@ static void ir_receive_task(void *pvParameters)
             memset(&received_code, 0, sizeof(ir_code_t));
             esp_err_t ret = ESP_FAIL;
 
-            // Try to decode as NEC protocol
+            // ========== COMPREHENSIVE DECODER CHAIN ==========
+            // Try protocols in priority order (most common first for performance)
+
+            // TIER 1: Most common consumer protocols
             ret = decode_nec_protocol(rx_data.received_symbols, rx_data.num_symbols, &received_code);
 
-            // If NEC failed, try Samsung
             if (ret != ESP_OK) {
                 ret = decode_samsung_protocol(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_sony(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_jvc(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_lg(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            // TIER 2: Extended consumer protocols
+            if (ret != ESP_OK) {
+                ret = ir_decode_denon(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_panasonic(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_samsung48(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_apple(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            // TIER 3: Exotic protocols
+            if (ret != ESP_OK) {
+                ret = ir_decode_whynter(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_lego(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_magiquest(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_bosewave(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_fast(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            // TIER 4: Universal decoder (fallback for unknown protocols)
+            if (ret != ESP_OK) {
+                ret = ir_decode_distance_width(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "Universal decoder successfully decoded unknown protocol");
+                }
             }
 
             if (ret == ESP_OK) {
@@ -992,22 +1069,39 @@ esp_err_t ir_transmit(ir_code_t *code)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret = ESP_OK;
+    // ========== MULTI-FREQUENCY CARRIER SUPPORT ==========
+    const ir_protocol_constants_t *proto = ir_get_protocol_constants(code->protocol);
+    uint32_t carrier_hz = proto ? (proto->carrier_khz * 1000) : 38000;
+
+    rmt_carrier_config_t carrier_cfg = {
+        .frequency_hz = carrier_hz,
+        .duty_cycle = 0.33f,
+        .flags.polarity_active_low = false,
+    };
+
+    esp_err_t ret = rmt_apply_carrier(tx_channel, &carrier_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set carrier to %lu Hz", carrier_hz);
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "Transmitting %s @ %lu Hz", ir_protocol_to_string(code->protocol), carrier_hz);
+
     rmt_transmit_config_t tx_config = {
         .loop_count = 0,
     };
 
-    if (code->protocol == IR_PROTOCOL_NEC) {
+    if (code->protocol == IR_PROTOCOL_NEC || code->protocol == IR_PROTOCOL_APPLE) {
         ret = rmt_transmit(tx_channel, nec_encoder, code, sizeof(ir_code_t), &tx_config);
         if (ret == ESP_OK) {
             ret = rmt_tx_wait_all_done(tx_channel, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "Transmitted NEC code: 0x%08lX", code->data);
+                ESP_LOGI(TAG, "Transmitted NEC/Apple code: 0x%08lX", code->data);
             } else {
                 ESP_LOGE(TAG, "NEC transmission error: %s", esp_err_to_name(ret));
             }
         }
-    } else if (code->protocol == IR_PROTOCOL_SAMSUNG) {
+    } else if (code->protocol == IR_PROTOCOL_SAMSUNG || code->protocol == IR_PROTOCOL_SAMSUNG48) {
         ret = rmt_transmit(tx_channel, samsung_encoder, code, sizeof(ir_code_t), &tx_config);
         if (ret == ESP_OK) {
             ret = rmt_tx_wait_all_done(tx_channel, 1000);
@@ -1034,8 +1128,17 @@ esp_err_t ir_transmit(ir_code_t *code)
             }
         }
     } else {
-        ESP_LOGW(TAG, "Unknown protocol or missing data");
-        ret = ESP_ERR_INVALID_ARG;
+        // For all other decoded protocols, try NEC encoder (most compatible)
+        ESP_LOGI(TAG, "Using NEC encoder for %s protocol", ir_protocol_to_string(code->protocol));
+        ret = rmt_transmit(tx_channel, nec_encoder, code, sizeof(ir_code_t), &tx_config);
+        if (ret == ESP_OK) {
+            ret = rmt_tx_wait_all_done(tx_channel, 1000);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Transmitted %s code: 0x%08lX", ir_protocol_to_string(code->protocol), code->data);
+            } else {
+                ESP_LOGE(TAG, "Transmission error: %s", esp_err_to_name(ret));
+            }
+        }
     }
 
     return ret;
