@@ -29,11 +29,20 @@
 // Include all protocol decoders
 #include "decoders/ir_distance_width.h"
 #include "decoders/ir_sony.h"
+#include "decoders/ir_rc5.h"
+#include "decoders/ir_rc6.h"
 #include "decoders/ir_jvc.h"
 #include "decoders/ir_lg.h"
 #include "decoders/ir_denon.h"
 #include "decoders/ir_panasonic.h"
 #include "decoders/ir_samsung48.h"
+#include "decoders/ir_mitsubishi.h"
+#include "decoders/ir_daikin.h"
+#include "decoders/ir_fujitsu.h"
+#include "decoders/ir_haier.h"
+#include "decoders/ir_midea.h"
+#include "decoders/ir_carrier.h"
+#include "decoders/ir_hitachi.h"
 #include "decoders/ir_whynter.h"
 #include "decoders/ir_lego.h"
 #include "decoders/ir_magiquest.h"
@@ -98,6 +107,18 @@ static rmt_receive_config_t receive_config;
 static ir_code_t learned_codes[IR_BTN_MAX];
 static SemaphoreHandle_t codes_mutex = NULL;
 
+// Last received code for repeat detection
+static ir_code_t last_nec_code = {0};
+static uint64_t last_nec_code_time = 0;
+#define NEC_REPEAT_TIMEOUT_MS  200  // Maximum gap for valid repeat
+
+// Multi-frame verification (commercial-grade reliability)
+#define IR_FRAME_VERIFY_COUNT  3  // Require 3 matching frames
+static ir_code_t verify_frames[IR_FRAME_VERIFY_COUNT];
+static uint8_t verify_frame_idx = 0;
+static uint64_t last_frame_time = 0;
+#define IR_FRAME_VERIFY_TIMEOUT_MS  500  // Reset verification if gap > 500ms
+
 // Learning mode state
 static bool learning_mode = false;
 static ir_button_t current_learning_button = IR_BTN_MAX;
@@ -159,7 +180,26 @@ static esp_err_t decode_nec_protocol(const rmt_symbol_word_t *symbols, size_t nu
         // Check for repeat code (9ms HIGH + 2.25ms LOW)
         if (timing_matches(symbols[0].duration1, NEC_REPEAT_CODE_LOW_US, IR_TIMING_TOLERANCE_US)) {
             ESP_LOGD(TAG, "NEC: Repeat code detected");
-            return ESP_ERR_NOT_SUPPORTED;  // Repeat codes not handled
+
+            // Check if we have a valid last NEC code within timeout window
+            uint64_t current_time = esp_timer_get_time() / 1000;  // Convert to ms
+            uint64_t time_since_last = current_time - last_nec_code_time;
+
+            if (last_nec_code.protocol == IR_PROTOCOL_NEC && time_since_last < NEC_REPEAT_TIMEOUT_MS) {
+                // Valid repeat frame - return last code with repeat flag
+                memcpy(code, &last_nec_code, sizeof(ir_code_t));
+                code->flags |= IR_FLAG_REPEAT;
+
+                ESP_LOGI(TAG, "NEC Repeat: Addr=0x%04X, Cmd=0x%02X (gap: %llu ms)",
+                         code->address, code->command, time_since_last);
+
+                // Update timestamp for next repeat
+                last_nec_code_time = current_time;
+                return ESP_OK;
+            } else {
+                ESP_LOGD(TAG, "NEC: Repeat code without recent NEC frame (gap: %llu ms)", time_since_last);
+                return ESP_ERR_INVALID_STATE;
+            }
         }
         ESP_LOGD(TAG, "NEC: Invalid leading LOW: %d", symbols[0].duration1);
         return ESP_ERR_INVALID_ARG;
@@ -206,21 +246,48 @@ static esp_err_t decode_nec_protocol(const rmt_symbol_word_t *symbols, size_t nu
     uint8_t command = (decoded_data >> 16) & 0xFF;
     uint8_t command_inv = (decoded_data >> 24) & 0xFF;
 
+    // Check if this is NEC Extended (16-bit address) or Standard NEC (8-bit address)
+    bool is_extended = false;
+    uint16_t full_address = address;
+
     // Verify inverted bits
-    if ((address ^ address_inv) != 0xFF || (command ^ command_inv) != 0xFF) {
-        ESP_LOGD(TAG, "NEC: Checksum failed: addr=0x%02X/0x%02X, cmd=0x%02X/0x%02X",
-                 address, address_inv, command, command_inv);
+    if ((command ^ command_inv) != 0xFF) {
+        // Command checksum failed
+        ESP_LOGD(TAG, "NEC: Command checksum failed: cmd=0x%02X/0x%02X",
+                 command, command_inv);
         return ESP_ERR_INVALID_CRC;
+    }
+
+    // Check address validation
+    if ((address ^ address_inv) != 0xFF) {
+        // Address checksum failed - might be NEC Extended
+        // In NEC Extended, byte 1 and byte 2 form a 16-bit address
+        is_extended = true;
+        full_address = address | (address_inv << 8);  // 16-bit address
+        ESP_LOGD(TAG, "NEC Extended detected: 16-bit addr=0x%04X", full_address);
     }
 
     // Fill in the code structure
     code->protocol = IR_PROTOCOL_NEC;
     code->data = decoded_data;
     code->bits = 32;
+    code->address = full_address;
+    code->command = command;
+    code->flags = is_extended ? IR_FLAG_EXTENDED : 0;
     code->raw_length = 0;
     code->raw_data = NULL;
 
-    ESP_LOGI(TAG, "Decoded NEC: Addr=0x%02X, Cmd=0x%02X, Data=0x%08lX", address, command, decoded_data);
+    // Store as last NEC code for repeat detection
+    memcpy(&last_nec_code, code, sizeof(ir_code_t));
+    last_nec_code_time = esp_timer_get_time() / 1000;  // Current time in ms
+
+    if (is_extended) {
+        ESP_LOGI(TAG, "Decoded NEC Extended: Addr=0x%04X, Cmd=0x%02X, Data=0x%08lX",
+                 full_address, command, decoded_data);
+    } else {
+        ESP_LOGI(TAG, "Decoded NEC: Addr=0x%02X, Cmd=0x%02X, Data=0x%08lX",
+                 address, command, decoded_data);
+    }
 
     return ESP_OK;
 }
@@ -287,6 +354,191 @@ static esp_err_t decode_samsung_protocol(const rmt_symbol_word_t *symbols, size_
 }
 
 /* ============================================================================
+ * SIGNAL PROCESSING & FILTERING
+ * ============================================================================ */
+
+// Noise filtering threshold (pulses shorter than this are considered noise)
+#define IR_NOISE_THRESHOLD_US  100
+
+// Maximum gap for frame detection (longer gaps indicate end of transmission)
+#define IR_MAX_IDLE_GAP_US     50000  // 50ms
+
+/**
+ * @brief Filter noise pulses from RMT symbols
+ *
+ * Removes pulses shorter than IR_NOISE_THRESHOLD_US which are typically
+ * caused by electrical noise or interference
+ *
+ * @param symbols Input RMT symbol array
+ * @param num_symbols Number of input symbols
+ * @param filtered Output filtered symbol array (must be pre-allocated)
+ * @param filtered_count Output number of filtered symbols
+ * @return ESP_OK on success
+ */
+static esp_err_t ir_filter_noise(const rmt_symbol_word_t *symbols, size_t num_symbols,
+                                   rmt_symbol_word_t *filtered, size_t *filtered_count)
+{
+    size_t out_idx = 0;
+
+    for (size_t i = 0; i < num_symbols; i++) {
+        const rmt_symbol_word_t *sym = &symbols[i];
+
+        // Filter out noise pulses (< 100µs)
+        bool d0_valid = (sym->duration0 >= IR_NOISE_THRESHOLD_US);
+        bool d1_valid = (sym->duration1 >= IR_NOISE_THRESHOLD_US);
+
+        if (d0_valid && d1_valid) {
+            // Both durations valid - keep symbol as-is
+            filtered[out_idx++] = *sym;
+        } else if (d0_valid && !d1_valid) {
+            // Only duration0 valid - merge with next symbol if possible
+            if (i + 1 < num_symbols) {
+                filtered[out_idx].level0 = sym->level0;
+                filtered[out_idx].duration0 = sym->duration0;
+                filtered[out_idx].level1 = symbols[i+1].level0;
+                filtered[out_idx].duration1 = symbols[i+1].duration0;
+                out_idx++;
+                i++;  // Skip next symbol (already merged)
+            }
+        }
+        // If duration0 is noise, skip entire symbol
+    }
+
+    *filtered_count = out_idx;
+
+    if (out_idx < num_symbols) {
+        ESP_LOGD(TAG, "Noise filter: %d → %d symbols (removed %d)",
+                 num_symbols, out_idx, num_symbols - out_idx);
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Trim leading and trailing idle gaps from signal
+ *
+ * Removes long idle periods at the start and end of the capture that
+ * don't contain useful IR data
+ *
+ * @param symbols Input symbol array
+ * @param num_symbols Number of symbols
+ * @param start_idx Output index of first valid symbol
+ * @param end_idx Output index of last valid symbol
+ * @return ESP_OK on success
+ */
+static esp_err_t ir_trim_gaps(const rmt_symbol_word_t *symbols, size_t num_symbols,
+                               size_t *start_idx, size_t *end_idx)
+{
+    *start_idx = 0;
+    *end_idx = num_symbols - 1;
+
+    // Find first symbol with short gap (actual signal start)
+    for (size_t i = 0; i < num_symbols; i++) {
+        if (symbols[i].duration0 < IR_MAX_IDLE_GAP_US &&
+            symbols[i].duration1 < IR_MAX_IDLE_GAP_US) {
+            *start_idx = i;
+            break;
+        }
+    }
+
+    // Find last symbol with short gap (actual signal end)
+    for (size_t i = num_symbols - 1; i > *start_idx; i--) {
+        if (symbols[i].duration0 < IR_MAX_IDLE_GAP_US &&
+            symbols[i].duration1 < IR_MAX_IDLE_GAP_US) {
+            *end_idx = i;
+            break;
+        }
+    }
+
+    if (*start_idx > 0 || *end_idx < num_symbols - 1) {
+        ESP_LOGD(TAG, "Gap trim: [%d:%d] → [%d:%d] (trimmed %d symbols)",
+                 0, num_symbols - 1, *start_idx, *end_idx,
+                 (*start_idx) + (num_symbols - 1 - *end_idx));
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Compare two IR codes for equality (for multi-frame verification)
+ *
+ * @param code1 First code
+ * @param code2 Second code
+ * @return true if codes match
+ */
+static bool ir_codes_match(const ir_code_t *code1, const ir_code_t *code2)
+{
+    // Must be same protocol
+    if (code1->protocol != code2->protocol) {
+        return false;
+    }
+
+    // For protocol-decoded signals, compare key fields
+    if (code1->protocol != IR_PROTOCOL_RAW) {
+        // Ignore toggle bit for RC5/RC6 comparison
+        bool is_toggle_protocol = (code1->protocol == IR_PROTOCOL_RC5 ||
+                                    code1->protocol == IR_PROTOCOL_RC6);
+
+        if (is_toggle_protocol) {
+            // Compare everything except toggle bit flag
+            return (code1->address == code2->address &&
+                    code1->command == code2->command &&
+                    code1->bits == code2->bits);
+        } else {
+            // For other protocols, compare data, address, command
+            return (code1->data == code2->data &&
+                    code1->address == code2->address &&
+                    code1->command == code2->command &&
+                    code1->bits == code2->bits);
+        }
+    } else {
+        // For RAW codes, compare length and timing (with tolerance)
+        if (code1->raw_length != code2->raw_length) {
+            return false;
+        }
+
+        // Compare raw timing data with 10% tolerance
+        const rmt_symbol_word_t *raw1 = (const rmt_symbol_word_t *)code1->raw_data;
+        const rmt_symbol_word_t *raw2 = (const rmt_symbol_word_t *)code2->raw_data;
+
+        for (size_t i = 0; i < code1->raw_length; i++) {
+            if (!timing_matches(raw1[i].duration0, raw2[i].duration0, raw2[i].duration0 / 10) ||
+                !timing_matches(raw1[i].duration1, raw2[i].duration1, raw2[i].duration1 / 10)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
+
+/**
+ * @brief Populate carrier frequency and metadata for decoded code
+ *
+ * Sets carrier frequency, duty cycle, and repeat period based on protocol type
+ *
+ * @param code IR code to populate
+ */
+static void ir_populate_metadata(ir_code_t *code)
+{
+    // Get protocol constants
+    const ir_protocol_constants_t *proto = ir_get_protocol_constants(code->protocol);
+
+    if (proto) {
+        // Set carrier frequency from protocol database
+        code->carrier_freq_hz = proto->carrier_khz * 1000;
+        code->repeat_period_ms = proto->repeat_period_ms;
+    } else {
+        // Default values for unknown/RAW protocols
+        code->carrier_freq_hz = 38000;  // Default 38kHz
+        code->repeat_period_ms = 110;    // Default NEC-like repeat
+    }
+
+    // Standard duty cycle for most IR protocols
+    code->duty_cycle_percent = 33;
+}
+
+/* ============================================================================
  * LEARNING MODE TIMEOUT
  * ============================================================================ */
 
@@ -326,14 +578,46 @@ static void ir_receive_task(void *pvParameters)
         if (xQueueReceive(receive_queue, &rx_data, portMAX_DELAY) == pdTRUE) {
             ESP_LOGI(TAG, "Received %d RMT symbols", rx_data.num_symbols);
 
+            // ========== SIGNAL PROCESSING & FILTERING ==========
+
+            // Step 1: Noise filtering (remove pulses < 100µs)
+            rmt_symbol_word_t filtered_symbols[IR_MAX_CODE_LENGTH];
+            size_t filtered_count = 0;
+            uint8_t processing_flags = IR_VALIDATION_NONE;
+
+            esp_err_t filter_ret = ir_filter_noise(rx_data.received_symbols, rx_data.num_symbols,
+                                                     filtered_symbols, &filtered_count);
+            if (filter_ret == ESP_OK && filtered_count > 0) {
+                processing_flags |= IR_VALIDATION_NOISE_FILTERED;
+            } else {
+                // No filtering applied, use original symbols
+                memcpy(filtered_symbols, rx_data.received_symbols,
+                       rx_data.num_symbols * sizeof(rmt_symbol_word_t));
+                filtered_count = rx_data.num_symbols;
+            }
+
+            // Step 2: Gap trimming (remove leading/trailing idle periods)
+            size_t trim_start = 0, trim_end = filtered_count - 1;
+            esp_err_t trim_ret = ir_trim_gaps(filtered_symbols, filtered_count, &trim_start, &trim_end);
+            if (trim_ret == ESP_OK && (trim_start > 0 || trim_end < filtered_count - 1)) {
+                processing_flags |= IR_VALIDATION_GAP_TRIMMED;
+            }
+
+            // Calculate trimmed symbol count
+            size_t processed_count = (trim_end - trim_start + 1);
+            const rmt_symbol_word_t *processed_symbols = &filtered_symbols[trim_start];
+
+            ESP_LOGD(TAG, "Signal processing: %d → %d (noise filter) → %d (gap trim) symbols",
+                     rx_data.num_symbols, filtered_count, processed_count);
+
+            // ========== PROTOCOL DECODING ==========
             memset(&received_code, 0, sizeof(ir_code_t));
             esp_err_t ret = ESP_FAIL;
 
-            // ========== COMPREHENSIVE DECODER CHAIN ==========
             // Try protocols in priority order (most common first for performance)
 
             // TIER 1: Most common consumer protocols
-            ret = decode_nec_protocol(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            ret = decode_nec_protocol(processed_symbols, processed_count, &received_code);
 
             if (ret != ESP_OK) {
                 ret = decode_samsung_protocol(rx_data.received_symbols, rx_data.num_symbols, &received_code);
@@ -341,6 +625,14 @@ static void ir_receive_task(void *pvParameters)
 
             if (ret != ESP_OK) {
                 ret = ir_decode_sony(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_rc5(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_rc6(rx_data.received_symbols, rx_data.num_symbols, &received_code);
             }
 
             if (ret != ESP_OK) {
@@ -366,6 +658,35 @@ static void ir_receive_task(void *pvParameters)
 
             if (ret != ESP_OK) {
                 ret = ir_decode_apple(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            // AC PROTOCOLS: Critical air conditioner brands
+            if (ret != ESP_OK) {
+                ret = ir_decode_mitsubishi(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_daikin(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_fujitsu(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_haier(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_midea(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_carrier(rx_data.received_symbols, rx_data.num_symbols, &received_code);
+            }
+
+            if (ret != ESP_OK) {
+                ret = ir_decode_hitachi(rx_data.received_symbols, rx_data.num_symbols, &received_code);
             }
 
             // TIER 3: Exotic protocols
@@ -398,34 +719,91 @@ static void ir_receive_task(void *pvParameters)
             }
 
             if (ret == ESP_OK) {
-                // Successfully decoded
+                // Successfully decoded - populate metadata
+                ir_populate_metadata(&received_code);
+                received_code.validation_status = processing_flags;
 
                 if (learning_mode && current_learning_button < IR_BTN_MAX) {
-                    // Learning mode: Store the code
-                    xSemaphoreTake(codes_mutex, portMAX_DELAY);
-                    learned_codes[current_learning_button] = received_code;
-                    xSemaphoreGive(codes_mutex);
+                    // ========== COMMERCIAL-GRADE MULTI-FRAME VERIFICATION ==========
+                    // Require 2-3 consecutive matching frames for reliable learning
 
-                    ESP_LOGI(TAG, "Learned %s code for button '%s'",
-                             protocol_names[received_code.protocol],
-                             button_names[current_learning_button]);
+                    uint64_t current_time = esp_timer_get_time() / 1000;  // Convert to ms
 
-                    // Auto-save
-                    ir_save_code(current_learning_button, &received_code);
-
-                    // Call success callback
-                    if (callbacks.learn_success_cb) {
-                        callbacks.learn_success_cb(current_learning_button, &received_code, callbacks.user_arg);
+                    // Check if this is a timeout (reset verification)
+                    if (current_time - last_frame_time > IR_FRAME_VERIFY_TIMEOUT_MS) {
+                        ESP_LOGD(TAG, "Frame verification timeout - resetting");
+                        verify_frame_idx = 0;
                     }
 
-                    // Stop learning timer
-                    if (learning_timer) {
-                        esp_timer_stop(learning_timer);
-                    }
+                    // Store frame in verification buffer
+                    if (verify_frame_idx == 0) {
+                        // First frame - store and wait for more
+                        verify_frames[0] = received_code;
+                        verify_frame_idx = 1;
+                        last_frame_time = current_time;
 
-                    // Exit learning mode
-                    learning_mode = false;
-                    current_learning_button = IR_BTN_MAX;
+                        received_code.validation_status |= IR_VALIDATION_SINGLE_FRAME;
+                        received_code.repeat_count = 1;
+
+                        ESP_LOGI(TAG, "Learning frame 1/3 - waiting for verification...");
+                    } else {
+                        // Subsequent frames - verify match
+                        if (ir_codes_match(&received_code, &verify_frames[0])) {
+                            verify_frame_idx++;
+                            last_frame_time = current_time;
+
+                            ESP_LOGI(TAG, "Learning frame %d/3 - match confirmed", verify_frame_idx);
+
+                            // Check if we have enough matching frames
+                            if (verify_frame_idx >= 2) {  // Accept 2 or 3 frames
+                                // Verification complete - store the code
+                                ir_code_t verified_code = verify_frames[0];
+
+                                // Update validation status
+                                if (verify_frame_idx == 2) {
+                                    verified_code.validation_status |= IR_VALIDATION_TWO_FRAMES;
+                                } else {
+                                    verified_code.validation_status |= IR_VALIDATION_THREE_FRAMES;
+                                }
+                                verified_code.repeat_count = verify_frame_idx;
+
+                                // Store the verified code
+                                xSemaphoreTake(codes_mutex, portMAX_DELAY);
+                                learned_codes[current_learning_button] = verified_code;
+                                xSemaphoreGive(codes_mutex);
+
+                                ESP_LOGI(TAG, "✓ Learned %s code for button '%s' (%d frames verified, carrier: %lu Hz)",
+                                         protocol_names[verified_code.protocol],
+                                         button_names[current_learning_button],
+                                         verify_frame_idx,
+                                         verified_code.carrier_freq_hz);
+
+                                // Auto-save
+                                ir_save_code(current_learning_button, &verified_code);
+
+                                // Call success callback
+                                if (callbacks.learn_success_cb) {
+                                    callbacks.learn_success_cb(current_learning_button, &verified_code, callbacks.user_arg);
+                                }
+
+                                // Stop learning timer
+                                if (learning_timer) {
+                                    esp_timer_stop(learning_timer);
+                                }
+
+                                // Exit learning mode
+                                learning_mode = false;
+                                current_learning_button = IR_BTN_MAX;
+                                verify_frame_idx = 0;
+                            }
+                        } else {
+                            // Frame mismatch - reset verification
+                            ESP_LOGW(TAG, "Frame mismatch - restarting verification");
+                            verify_frames[0] = received_code;
+                            verify_frame_idx = 1;
+                            last_frame_time = current_time;
+                        }
+                    }
                 } else {
                     // Normal mode: Call receive callback
                     if (callbacks.receive_cb) {

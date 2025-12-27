@@ -30,16 +30,23 @@ static const char* PROTOCOL_NAMES[] = {
     [IR_PROTOCOL_SHARP] = "SHARP",
     [IR_PROTOCOL_PANASONIC] = "PANASONIC",
     [IR_PROTOCOL_KASEIKYO] = "KASEIKYO",
+    [IR_PROTOCOL_APPLE] = "APPLE",
+    [IR_PROTOCOL_ONKYO] = "ONKYO",
+    [IR_PROTOCOL_SAMSUNG48] = "SAMSUNG48",
+    [IR_PROTOCOL_SAMSUNGLG] = "SAMSUNGLG",
+    [IR_PROTOCOL_LG2] = "LG2",
+    [IR_PROTOCOL_MITSUBISHI] = "MITSUBISHI",
+    [IR_PROTOCOL_DAIKIN] = "DAIKIN",
+    [IR_PROTOCOL_FUJITSU] = "FUJITSU",
+    [IR_PROTOCOL_HAIER] = "HAIER",
+    [IR_PROTOCOL_MIDEA] = "MIDEA",
+    [IR_PROTOCOL_CARRIER] = "CARRIER",
+    [IR_PROTOCOL_HITACHI] = "HITACHI",
     [IR_PROTOCOL_WHYNTER] = "WHYNTER",
     [IR_PROTOCOL_LEGO_PF] = "LEGO_PF",
     [IR_PROTOCOL_MAGIQUEST] = "MAGIQUEST",
     [IR_PROTOCOL_BOSEWAVE] = "BOSEWAVE",
     [IR_PROTOCOL_BANG_OLUFSEN] = "BANG_OLUFSEN",
-    [IR_PROTOCOL_SAMSUNG48] = "SAMSUNG48",
-    [IR_PROTOCOL_SAMSUNGLG] = "SAMSUNGLG",
-    [IR_PROTOCOL_LG2] = "LG2",
-    [IR_PROTOCOL_ONKYO] = "ONKYO",
-    [IR_PROTOCOL_APPLE] = "APPLE",
     [IR_PROTOCOL_FAST] = "FAST",
     [IR_PROTOCOL_PULSE_DISTANCE] = "PULSE_DISTANCE",
     [IR_PROTOCOL_PULSE_WIDTH] = "PULSE_WIDTH",
@@ -286,6 +293,122 @@ static const ir_protocol_constants_t PROTOCOL_DATABASE[] = {
         .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
         .repeat_period_ms = 110,
         .bits = 28
+    },
+
+    // ============ AIR CONDITIONER PROTOCOLS ============
+
+    // Mitsubishi Electric AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Mitsubishi.hpp
+    // 152 bits (19 bytes) with checksum
+    {
+        .protocol = IR_PROTOCOL_MITSUBISHI,
+        .carrier_khz = 38,
+        .header_mark_us = 3400,
+        .header_space_us = 1750,
+        .bit_mark_us = 450,
+        .one_space_us = 1300,
+        .zero_space_us = 420,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 152
+    },
+
+    // Daikin AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Daikin.hpp
+    // Multi-frame protocol: 8 bytes + 19 bytes (216 bits total)
+    {
+        .protocol = IR_PROTOCOL_DAIKIN,
+        .carrier_khz = 38,
+        .header_mark_us = 3650,
+        .header_space_us = 1623,
+        .bit_mark_us = 428,
+        .one_space_us = 1280,
+        .zero_space_us = 428,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 216
+    },
+
+    // Fujitsu General AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Fujitsu.hpp
+    // Variable length: 64-128 bits
+    {
+        .protocol = IR_PROTOCOL_FUJITSU,
+        .carrier_khz = 38,
+        .header_mark_us = 3300,
+        .header_space_us = 1650,
+        .bit_mark_us = 420,
+        .one_space_us = 1280,
+        .zero_space_us = 420,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 128
+    },
+
+    // Haier AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Haier.hpp
+    // 104 bits (13 bytes) with XOR checksum
+    {
+        .protocol = IR_PROTOCOL_HAIER,
+        .carrier_khz = 38,
+        .header_mark_us = 3000,
+        .header_space_us = 3000,
+        .bit_mark_us = 520,
+        .one_space_us = 1650,
+        .zero_space_us = 650,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 104
+    },
+
+    // Midea AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Midea.hpp
+    // 48 bits (6 bytes) with inverted validation
+    // Used by: Midea, Toshiba, Carrier, Electrolux (OEM)
+    {
+        .protocol = IR_PROTOCOL_MIDEA,
+        .carrier_khz = 38,
+        .header_mark_us = 4500,
+        .header_space_us = 4500,
+        .bit_mark_us = 560,
+        .one_space_us = 1680,
+        .zero_space_us = 560,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 48
+    },
+
+    // Carrier AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Carrier.hpp
+    // CRITICAL for India: Used by Voltas (#1), Blue Star, Lloyd
+    // 128 bits (16 bytes) with nibble-based checksum
+    {
+        .protocol = IR_PROTOCOL_CARRIER,
+        .carrier_khz = 38,
+        .header_mark_us = 8820,
+        .header_space_us = 4410,
+        .bit_mark_us = 420,
+        .one_space_us = 1260,
+        .zero_space_us = 420,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 128
+    },
+
+    // Hitachi AC Protocol
+    // Reference: Arduino-IRremote/src/ir_Hitachi.hpp
+    // Variable length: 264 or 344 bits
+    {
+        .protocol = IR_PROTOCOL_HITACHI,
+        .carrier_khz = 38,
+        .header_mark_us = 3300,
+        .header_space_us = 1700,
+        .bit_mark_us = 370,
+        .one_space_us = 1260,
+        .zero_space_us = 370,
+        .flags = PROTOCOL_IS_LSB_FIRST | PROTOCOL_IS_PULSE_DISTANCE,
+        .repeat_period_ms = 0,
+        .bits = 264
     },
 
     // ============ EXOTIC PROTOCOLS ============

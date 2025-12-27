@@ -62,6 +62,15 @@ typedef enum {
     IR_PROTOCOL_SAMSUNGLG,      // Samsung-LG hybrid
     IR_PROTOCOL_LG2,            // LG variant for air conditioners
 
+    // Air Conditioner protocols (critical AC brands)
+    IR_PROTOCOL_MITSUBISHI,     // Mitsubishi Electric AC (152-bit)
+    IR_PROTOCOL_DAIKIN,         // Daikin AC (multi-frame, 312-bit)
+    IR_PROTOCOL_FUJITSU,        // Fujitsu General AC (variable length)
+    IR_PROTOCOL_HAIER,          // Haier AC (104-bit)
+    IR_PROTOCOL_MIDEA,          // Midea AC (48-bit, used by many brands)
+    IR_PROTOCOL_CARRIER,        // Carrier AC (Voltas, Blue Star, Lloyd - India)
+    IR_PROTOCOL_HITACHI,        // Hitachi AC (variable length)
+
     // Exotic protocols (less common)
     IR_PROTOCOL_WHYNTER,        // Whynter portable AC
     IR_PROTOCOL_LEGO_PF,        // Lego Power Functions
@@ -95,6 +104,13 @@ typedef struct {
     uint16_t address;           // Device/manufacturer address field
     uint16_t command;           // Command/button code field
     uint8_t flags;              // Status flags (repeat, toggle, parity, etc.)
+
+    // Commercial-grade metadata (v2.3.0+)
+    uint32_t carrier_freq_hz;   // Carrier frequency (36000, 38000, 40000, 455000)
+    uint8_t duty_cycle_percent; // Carrier duty cycle (typically 33%)
+    uint8_t repeat_count;       // Number of frames verified during learning
+    uint16_t repeat_period_ms;  // Time between repeat frames for long-press
+    uint8_t validation_status;  // Multi-frame verification status
 } ir_code_t;
 
 /**
@@ -108,8 +124,22 @@ typedef struct {
 #define IR_FLAG_PARITY_FAILED   0x04  // Checksum/parity validation failed
 #define IR_FLAG_TOGGLE_BIT      0x08  // RC5/RC6 toggle bit is set
 #define IR_FLAG_EXTRA_INFO      0x10  // Extra info available (e.g. Kaseikyo vendor ID)
+#define IR_FLAG_EXTENDED        0x20  // NEC Extended addressing (16-bit address)
 #define IR_FLAG_WAS_OVERFLOW    0x40  // Buffer overflow occurred
 #define IR_FLAG_MSB_FIRST       0x80  // Data transmitted MSB first (vs LSB first)
+
+/**
+ * @brief Validation Status Flags
+ *
+ * Multi-frame verification status (stored in validation_status field)
+ */
+#define IR_VALIDATION_NONE          0x00  // No validation performed
+#define IR_VALIDATION_SINGLE_FRAME  0x01  // Single frame captured (not verified)
+#define IR_VALIDATION_TWO_FRAMES    0x02  // Two consecutive frames matched
+#define IR_VALIDATION_THREE_FRAMES  0x03  // Three consecutive frames matched (commercial-grade)
+#define IR_VALIDATION_NOISE_FILTERED 0x10  // Noise filtering applied
+#define IR_VALIDATION_GAP_TRIMMED   0x20  // Leading/trailing gaps trimmed
+#define IR_VALIDATION_CARRIER_DETECTED 0x40  // Carrier frequency detected (if available)
 
 /**
  * @brief Universal Remote Button Definitions (32 buttons)
