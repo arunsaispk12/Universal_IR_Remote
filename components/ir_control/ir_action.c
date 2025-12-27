@@ -48,6 +48,7 @@ static const char* device_names[] = {
     [IR_DEVICE_STB]     = "STB",
     [IR_DEVICE_SPEAKER] = "Speaker",
     [IR_DEVICE_FAN]     = "Fan",
+    [IR_DEVICE_CUSTOM]  = "Custom",
 };
 
 static const char* action_names[] = {
@@ -144,6 +145,20 @@ static const char* action_names[] = {
     [IR_ACTION_AC_FAN_SPEED_UP]     = "ACFanSpeedUp",
     [IR_ACTION_AC_FAN_SPEED_DOWN]   = "ACFanSpeedDown",
     [IR_ACTION_AC_SWING]            = "ACSwing",
+
+    /* Custom Device Actions */
+    [IR_ACTION_CUSTOM_1]            = "Custom1",
+    [IR_ACTION_CUSTOM_2]            = "Custom2",
+    [IR_ACTION_CUSTOM_3]            = "Custom3",
+    [IR_ACTION_CUSTOM_4]            = "Custom4",
+    [IR_ACTION_CUSTOM_5]            = "Custom5",
+    [IR_ACTION_CUSTOM_6]            = "Custom6",
+    [IR_ACTION_CUSTOM_7]            = "Custom7",
+    [IR_ACTION_CUSTOM_8]            = "Custom8",
+    [IR_ACTION_CUSTOM_9]            = "Custom9",
+    [IR_ACTION_CUSTOM_10]           = "Custom10",
+    [IR_ACTION_CUSTOM_11]           = "Custom11",
+    [IR_ACTION_CUSTOM_12]           = "Custom12",
 };
 
 /* ============================================================================

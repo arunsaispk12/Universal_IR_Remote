@@ -40,6 +40,7 @@ typedef enum {
     IR_DEVICE_STB,             // Set-Top Box (DTH/Cable)
     IR_DEVICE_SPEAKER,         // Soundbar/Home Theater
     IR_DEVICE_FAN,             // IR-controlled fan
+    IR_DEVICE_CUSTOM,          // Custom/Generic IR device
     IR_DEVICE_MAX
 } ir_device_type_t;
 
@@ -159,8 +160,23 @@ typedef enum {
     IR_ACTION_AC_FAN_SPEED_DOWN,    // Fan speed decrease
     IR_ACTION_AC_SWING,             // Swing/Oscillation toggle
 
+    /* ===== CUSTOM DEVICE ACTIONS ===== */
+    /* Generic actions for custom IR devices (projectors, cameras, etc.) */
+    IR_ACTION_CUSTOM_1,             // Custom button 1
+    IR_ACTION_CUSTOM_2,             // Custom button 2
+    IR_ACTION_CUSTOM_3,             // Custom button 3
+    IR_ACTION_CUSTOM_4,             // Custom button 4
+    IR_ACTION_CUSTOM_5,             // Custom button 5
+    IR_ACTION_CUSTOM_6,             // Custom button 6
+    IR_ACTION_CUSTOM_7,             // Custom button 7
+    IR_ACTION_CUSTOM_8,             // Custom button 8
+    IR_ACTION_CUSTOM_9,             // Custom button 9
+    IR_ACTION_CUSTOM_10,            // Custom button 10
+    IR_ACTION_CUSTOM_11,            // Custom button 11
+    IR_ACTION_CUSTOM_12,            // Custom button 12
+
     /* ===== TOTAL ACTIONS ===== */
-    IR_ACTION_MAX                   // Total: 100+ actions
+    IR_ACTION_MAX                   // Total: 110+ actions
 } ir_action_t;
 
 /**

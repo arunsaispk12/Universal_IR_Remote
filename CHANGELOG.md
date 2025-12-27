@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0] - 2025-12-27
+
+### ✨ Feature Release - Custom Device Support
+
+This release adds a generic "Custom" device for controlling any IR appliance that doesn't fit into existing categories (TV, AC, STB, Speaker, Fan).
+
+### Added - Custom Device
+
+- **Generic Custom Device** (`IR_DEVICE_CUSTOM`)
+  - 6th RainMaker device for miscellaneous IR appliances
+  - Use cases: Projectors, cameras, media players, LED strips, etc.
+  - 12 programmable buttons (Button_1 through Button_12)
+  - Power parameter + Learning mode
+  - Full NVS persistence for all button codes
+
+- **Custom Device Actions** (`ir_action.h`)
+  - Added 12 new custom actions: `IR_ACTION_CUSTOM_1` through `IR_ACTION_CUSTOM_12`
+  - Each button can store any IR code
+  - Learning mode supports all 12 buttons individually
+
+- **RainMaker Integration** (`app_main.c`)
+  - `custom_write_cb()` callback for button presses
+  - `create_custom_device()` function creates device with 12 toggle buttons
+  - Learn_Mode parameter for learning IR codes for each button
+  - Power parameter for common power control
+
+### Changed - Architecture Updates
+
+- **Device Type Enum** (`ir_action.h`)
+  - Added `IR_DEVICE_CUSTOM` to `ir_device_type_t` enum
+  - Updated total device types to 7 (including NONE and MAX)
+
+- **Action Names Table** (`ir_action.c`)
+  - Added device name "Custom" to device_names array
+  - Added action names "Custom1" through "Custom12" to action_names array
+
+- **App Main Updates** (`app_main.c`)
+  - Updated startup log to show 6 devices: "TV, AC, STB, Speaker, Fan, Custom"
+  - Updated file header comment to reflect v3.1+ architecture
+
+### Technical Details
+
+**Code Changes**:
+- `components/ir_control/include/ir_action.h`: +14 lines (Custom device type + 12 actions)
+- `components/ir_control/ir_action.c`: +13 lines (device and action names)
+- `main/app_main.c`: +120 lines (callback + device creation)
+- `version.txt`: 3.1.0 → 3.2.0
+
+**Usage Flow**:
+1. User selects "Custom" device in RainMaker app
+2. Selects which button to learn (Button1-Button12)
+3. System enters learning mode (LED blinks)
+4. User presses button on their IR remote (projector, camera, etc.)
+5. IR code is captured and saved to NVS
+6. Button is now ready to use
+7. Repeat for all desired buttons
+
+**Storage Keys**:
+- Custom device codes stored as: "custom_1", "custom_2", ..., "custom_12"
+- Power stored as: "custom_power"
+
+### Use Cases
+
+**Projectors**:
+- Button1: Power On/Off
+- Button2: Input Source
+- Button3: Menu
+- Button4: Brightness Up
+- Button5: Brightness Down
+- ... etc.
+
+**Camera Systems**:
+- Button1: Record Start/Stop
+- Button2: Zoom In
+- Button3: Zoom Out
+- Button4: Snapshot
+- ... etc.
+
+**LED Strip Controllers**:
+- Button1: Power
+- Button2: Brightness Up
+- Button3: Brightness Down
+- Button4-12: Color presets
+
+### Notes
+
+- All 12 buttons can be learned independently
+- No pre-defined button functions - fully customizable
+- Compatible with all IR protocols supported by the system
+- Full NVS persistence - codes survive reboots
+
+---
+
 ## [3.1.0] - 2025-12-27
 
 ### ✨ Feature Release - Full AC Protocol Support

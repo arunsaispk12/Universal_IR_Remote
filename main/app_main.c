@@ -1,11 +1,12 @@
 /**
  * @file app_main.c
- * @brief Universal IR Remote Control with ESP RainMaker - Multi-Device Architecture (v3.0)
+ * @brief Universal IR Remote Control with ESP RainMaker - Multi-Device Architecture (v3.1+)
  *
  * Features:
- * - Multi-device architecture (TV, AC, STB, Speaker, Fan)
+ * - Multi-device architecture (TV, AC, STB, Speaker, Fan, Custom)
  * - Logical action mapping (RainMaker params → IR codes)
  * - AC state-based control (full state regeneration)
+ * - Custom device (12 programmable buttons for any IR appliance)
  * - BLE WiFi provisioning
  * - Cloud control via RainMaker app
  * - IR learning and transmission
@@ -19,7 +20,7 @@
  *
  * Example: TV.Volume parameter change → IR_ACTION_VOL_UP → Stored IR code → Transmit
  *
- * v3.0 - Complete architectural refactor for production deployment
+ * v3.1+ - Custom device support for generic IR appliances
  */
 
 #include <string.h>
@@ -61,6 +62,7 @@ static esp_rmaker_device_t *ac_device = NULL;
 static esp_rmaker_device_t *stb_device = NULL;
 static esp_rmaker_device_t *speaker_device = NULL;
 static esp_rmaker_device_t *fan_device = NULL;
+static esp_rmaker_device_t *custom_device = NULL;
 
 /* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
@@ -447,6 +449,96 @@ static esp_err_t stb_write_cb(const esp_rmaker_device_t *device,
 }
 
 /* ============================================================================
+ * CUSTOM DEVICE CALLBACKS
+ * ============================================================================ */
+
+static esp_err_t custom_write_cb(const esp_rmaker_device_t *device,
+                                   const esp_rmaker_param_t *param,
+                                   const esp_rmaker_param_val_t val,
+                                   void *priv_data,
+                                   esp_rmaker_write_ctx_t *ctx)
+{
+    const char *param_name = esp_rmaker_param_get_name(param);
+    ESP_LOGI(TAG, "Custom device parameter update: %s", param_name);
+
+    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_POWER);
+    }
+    /* Button 1-12 */
+    else if (strcmp(param_name, "Button_1") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_1);
+    }
+    else if (strcmp(param_name, "Button_2") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_2);
+    }
+    else if (strcmp(param_name, "Button_3") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_3);
+    }
+    else if (strcmp(param_name, "Button_4") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_4);
+    }
+    else if (strcmp(param_name, "Button_5") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_5);
+    }
+    else if (strcmp(param_name, "Button_6") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_6);
+    }
+    else if (strcmp(param_name, "Button_7") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_7);
+    }
+    else if (strcmp(param_name, "Button_8") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_8);
+    }
+    else if (strcmp(param_name, "Button_9") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_9);
+    }
+    else if (strcmp(param_name, "Button_10") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_10);
+    }
+    else if (strcmp(param_name, "Button_11") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_11);
+    }
+    else if (strcmp(param_name, "Button_12") == 0) {
+        return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_12);
+    }
+    /* Learn Mode */
+    else if (strcmp(param_name, "Learn_Mode") == 0) {
+        const char *action_name = val.val.s;
+        ESP_LOGI(TAG, "Custom Learn Mode: %s", action_name);
+
+        /* Map action name to ir_action_t */
+        ir_action_t action = IR_ACTION_NONE;
+        if (strcmp(action_name, "Power") == 0) action = IR_ACTION_POWER;
+        else if (strcmp(action_name, "Button1") == 0) action = IR_ACTION_CUSTOM_1;
+        else if (strcmp(action_name, "Button2") == 0) action = IR_ACTION_CUSTOM_2;
+        else if (strcmp(action_name, "Button3") == 0) action = IR_ACTION_CUSTOM_3;
+        else if (strcmp(action_name, "Button4") == 0) action = IR_ACTION_CUSTOM_4;
+        else if (strcmp(action_name, "Button5") == 0) action = IR_ACTION_CUSTOM_5;
+        else if (strcmp(action_name, "Button6") == 0) action = IR_ACTION_CUSTOM_6;
+        else if (strcmp(action_name, "Button7") == 0) action = IR_ACTION_CUSTOM_7;
+        else if (strcmp(action_name, "Button8") == 0) action = IR_ACTION_CUSTOM_8;
+        else if (strcmp(action_name, "Button9") == 0) action = IR_ACTION_CUSTOM_9;
+        else if (strcmp(action_name, "Button10") == 0) action = IR_ACTION_CUSTOM_10;
+        else if (strcmp(action_name, "Button11") == 0) action = IR_ACTION_CUSTOM_11;
+        else if (strcmp(action_name, "Button12") == 0) action = IR_ACTION_CUSTOM_12;
+        else {
+            ESP_LOGW(TAG, "Unknown action: %s", action_name);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        /* Start learning */
+        learning_state.device = IR_DEVICE_CUSTOM;
+        learning_state.action = action;
+        learning_state.is_active = true;
+
+        rgb_led_set_status(LED_STATUS_LEARNING);
+        return ir_learn_start(IR_BTN_CUSTOM_1, IR_LEARNING_TIMEOUT_MS);
+    }
+
+    return ESP_OK;
+}
+
+/* ============================================================================
  * RAINMAKER DEVICE CREATION
  * ============================================================================ */
 
@@ -618,6 +710,38 @@ static esp_err_t create_stb_device(esp_rmaker_node_t *node)
     return ESP_OK;
 }
 
+static esp_err_t create_custom_device(esp_rmaker_node_t *node)
+{
+    custom_device = esp_rmaker_device_create("Custom", ESP_RMAKER_DEVICE_OTHER, NULL);
+    if (!custom_device) {
+        ESP_LOGE(TAG, "Failed to create Custom device");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(custom_device, custom_write_cb, NULL);
+    esp_rmaker_device_add_param(custom_device, esp_rmaker_name_param_create("Name", "Custom Device"));
+    esp_rmaker_device_add_param(custom_device, esp_rmaker_power_param_create("Power", false));
+
+    /* Button 1-12 */
+    for (int i = 1; i <= 12; i++) {
+        char button_name[16];
+        snprintf(button_name, sizeof(button_name), "Button_%d", i);
+        esp_rmaker_param_t *button = esp_rmaker_param_create(button_name, "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_WRITE);
+        esp_rmaker_device_add_param(custom_device, button);
+    }
+
+    /* Learning mode parameter */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    esp_rmaker_device_add_param(custom_device, learn_mode);
+
+    esp_rmaker_node_add_device(node, custom_device);
+    ESP_LOGI(TAG, "Custom device created");
+    return ESP_OK;
+}
+
 /* ============================================================================
  * BOOT BUTTON HANDLER (WiFi Reset / Factory Reset)
  * ============================================================================ */
@@ -759,6 +883,7 @@ void app_main(void)
     ESP_ERROR_CHECK(create_stb_device(node));
     ESP_ERROR_CHECK(create_speaker_device(node));
     ESP_ERROR_CHECK(create_fan_device(node));
+    ESP_ERROR_CHECK(create_custom_device(node));
 
     /* Enable OTA */
     esp_rmaker_ota_enable_default();
@@ -782,7 +907,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  Universal IR Remote Ready!");
-    ESP_LOGI(TAG, "  Devices: TV, AC, STB, Speaker, Fan");
+    ESP_LOGI(TAG, "  Devices: TV, AC, STB, Speaker, Fan, Custom");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Use RainMaker app to provision and control");
 }
