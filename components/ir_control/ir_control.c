@@ -361,7 +361,7 @@ static esp_err_t decode_samsung_protocol(const rmt_symbol_word_t *symbols, size_
 #define IR_NOISE_THRESHOLD_US  100
 
 // Maximum gap for frame detection (longer gaps indicate end of transmission)
-#define IR_MAX_IDLE_GAP_US     50000  // 50ms
+#define IR_MAX_IDLE_GAP_US     32000  // 32ms (max for 15-bit RMT duration)
 
 /**
  * @brief Filter noise pulses from RMT symbols
@@ -1637,9 +1637,9 @@ esp_err_t ir_save_code(ir_button_t button, ir_code_t *code)
     nvs_handle_t nvs_handle;
     esp_err_t ret;
 
-    ret = nvs_open(IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    ret = nvs_open_from_partition("ir_storage", IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to open NVS from ir_storage partition: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -1684,7 +1684,7 @@ esp_err_t ir_load_code(ir_button_t button, ir_code_t *code)
     nvs_handle_t nvs_handle;
     esp_err_t ret;
 
-    ret = nvs_open(IR_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    ret = nvs_open_from_partition("ir_storage", IR_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (ret != ESP_OK) {
         return ESP_ERR_NOT_FOUND;
     }
@@ -1751,7 +1751,7 @@ esp_err_t ir_load_all_codes(void)
     nvs_handle_t nvs_handle;
     esp_err_t ret;
 
-    ret = nvs_open(IR_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    ret = nvs_open_from_partition("ir_storage", IR_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (ret != ESP_OK) {
         ESP_LOGI(TAG, "No saved IR codes found");
         return ESP_OK;
@@ -1829,7 +1829,7 @@ esp_err_t ir_clear_code(ir_button_t button)
 
     // Clear from NVS
     nvs_handle_t nvs_handle;
-    esp_err_t ret = nvs_open(IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t ret = nvs_open_from_partition("ir_storage", IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (ret == ESP_OK) {
         char key[20];
         snprintf(key, sizeof(key), "btn_%d", button);
@@ -1863,7 +1863,7 @@ esp_err_t ir_clear_all_codes(void)
 
     // Clear NVS
     nvs_handle_t nvs_handle;
-    esp_err_t ret = nvs_open(IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t ret = nvs_open_from_partition("ir_storage", IR_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (ret == ESP_OK) {
         nvs_erase_all(nvs_handle);
         nvs_commit(nvs_handle);

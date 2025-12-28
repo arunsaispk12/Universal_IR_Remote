@@ -23,7 +23,7 @@ static const char *TAG = "ir_ac_state";
 
 /* Internal state */
 static bool is_initialized = false;
-static nvs_handle_t nvs_handle = 0;
+static nvs_handle_t nvs_handle_ac = 0;
 static ac_state_t current_state = {0};
 
 /* Forward declarations for protocol encoders */
@@ -79,10 +79,10 @@ esp_err_t ir_ac_state_init(void)
         return ESP_OK;
     }
 
-    /* Open NVS namespace for AC state */
-    esp_err_t err = nvs_open(NVS_NAMESPACE_AC, NVS_READWRITE, &nvs_handle);
+    /* Open NVS namespace for AC state from dedicated ir_storage partition */
+    esp_err_t err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_AC, NVS_READWRITE, &nvs_handle_ac);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to open NVS namespace from ir_storage partition: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -850,14 +850,14 @@ esp_err_t ir_ac_save_state(void)
     }
 
     /* Save AC state to NVS */
-    esp_err_t err = nvs_set_blob(nvs_handle, NVS_KEY_AC_STATE, &current_state, sizeof(ac_state_t));
+    esp_err_t err = nvs_set_blob(nvs_handle_ac, NVS_KEY_AC_STATE, &current_state, sizeof(ac_state_t));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save AC state: %s", esp_err_to_name(err));
         return err;
     }
 
     /* Commit to NVS */
-    err = nvs_commit(nvs_handle);
+    err = nvs_commit(nvs_handle_ac);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
         return err;
@@ -875,7 +875,7 @@ esp_err_t ir_ac_load_state(void)
 
     /* Load AC state from NVS */
     size_t required_size = sizeof(ac_state_t);
-    esp_err_t err = nvs_get_blob(nvs_handle, NVS_KEY_AC_STATE, &current_state, &required_size);
+    esp_err_t err = nvs_get_blob(nvs_handle_ac, NVS_KEY_AC_STATE, &current_state, &required_size);
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "No saved AC state found");
@@ -900,14 +900,14 @@ esp_err_t ir_ac_clear_state(void)
     }
 
     /* Erase from NVS */
-    esp_err_t err = nvs_erase_key(nvs_handle, NVS_KEY_AC_STATE);
+    esp_err_t err = nvs_erase_key(nvs_handle_ac, NVS_KEY_AC_STATE);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGE(TAG, "Failed to clear AC state: %s", esp_err_to_name(err));
         return err;
     }
 
     /* Commit */
-    err = nvs_commit(nvs_handle);
+    err = nvs_commit(nvs_handle_ac);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
         return err;

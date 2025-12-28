@@ -1,4 +1,4 @@
-# Build Instructions - Universal IR Remote v1.0.0
+# Build Instructions - Universal IR Remote v3.3.0
 
 **Complete guide to building and flashing the firmware**
 
@@ -13,7 +13,7 @@
 - **USB-to-UART driver**
 
 ### Required Hardware
-- ESP32 development board
+- ESP32, ESP32-S3, ESP32-C3, or ESP32-S2 development board
 - USB cable (data-capable)
 - IR receiver module (IRM-3638T or VS1838B)
 - IR LED transmitter (940nm)
@@ -46,7 +46,7 @@ git clone --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
 git checkout v5.5.1
 git submodule update --init --recursive
-./install.sh esp32
+./install.sh esp32,esp32s3,esp32c3,esp32s2
 ```
 
 ### Step 2: Set Up Environment

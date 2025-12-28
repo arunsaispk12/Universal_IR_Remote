@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "app_wifi.c"
+        "rmaker_devices.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -15,4 +16,6 @@ idf_component_register(
         app_update
         esp_timer
         console
+    PRIV_REQUIRES
+        espressif__network_provisioning
 )

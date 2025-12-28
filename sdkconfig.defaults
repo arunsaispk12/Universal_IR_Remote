@@ -1,8 +1,8 @@
-# ESP32 Configuration
-CONFIG_IDF_TARGET="esp32"
-CONFIG_IDF_TARGET_ESP32=y
+# ESP32/ESP32-S3 Multi-Target Configuration
+# Target is set via 'idf.py set-target <target>' command
+# Do not hardcode CONFIG_IDF_TARGET here - it will be set automatically
 
-# Flash Configuration (4MB)
+# Flash Configuration (4MB default - adjust in menuconfig for 8MB/16MB)
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_ESPTOOLPY_FLASHFREQ_40M=y

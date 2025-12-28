@@ -11,8 +11,8 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
-#include "wifi_provisioning/manager.h"
-#include "wifi_provisioning/scheme_ble.h"
+#include "network_provisioning/manager.h"
+#include "network_provisioning/scheme_ble.h"
 #include "esp_random.h"
 
 #include "app_wifi.h"
@@ -83,14 +83,14 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 static void wifi_prov_event_handler(void *arg, esp_event_base_t event_base,
                                     int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_PROV_EVENT) {
+    if (event_base == NETWORK_PROV_EVENT) {
         switch (event_id) {
-        case WIFI_PROV_START:
+        case NETWORK_PROV_START:
             ESP_LOGI(TAG, "Provisioning started");
             s_wifi_state = WIFI_STATE_PROVISIONING;
             rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
             break;
-        case WIFI_PROV_CRED_RECV: {
+        case NETWORK_PROV_WIFI_CRED_RECV: {
             wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
             ESP_LOGI(TAG, "Received WiFi credentials"
                      "\n\tSSID     : %s\n\tPassword : %s",
@@ -98,21 +98,21 @@ static void wifi_prov_event_handler(void *arg, esp_event_base_t event_base,
                      (const char *)wifi_sta_cfg->password);
             break;
         }
-        case WIFI_PROV_CRED_FAIL: {
-            wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)event_data;
+        case NETWORK_PROV_WIFI_CRED_FAIL: {
+            network_prov_wifi_sta_fail_reason_t *reason = (network_prov_wifi_sta_fail_reason_t *)event_data;
             ESP_LOGE(TAG, "Provisioning failed!\n\tReason : %s"
                      "\n\tPlease reset to factory and retry provisioning",
-                     (*reason == WIFI_PROV_STA_AUTH_ERROR) ?
+                     (*reason == NETWORK_PROV_WIFI_STA_AUTH_ERROR) ?
                      "WiFi station authentication failed" : "WiFi access-point not found");
             rgb_led_set_status(LED_STATUS_ERROR);
             break;
         }
-        case WIFI_PROV_CRED_SUCCESS:
+        case NETWORK_PROV_WIFI_CRED_SUCCESS:
             ESP_LOGI(TAG, "Provisioning successful");
             break;
-        case WIFI_PROV_END:
+        case NETWORK_PROV_END:
             /* De-initialize manager once provisioning is finished */
-            wifi_prov_mgr_deinit();
+            network_prov_mgr_deinit();
             ESP_LOGI(TAG, "Provisioning ended");
             break;
         default:
@@ -141,16 +141,16 @@ esp_err_t app_wifi_init(const char *pop_pin)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
     /* Configuration for the provisioning manager */
-    wifi_prov_mgr_config_t prov_config = {
-        .scheme = wifi_prov_scheme_ble,
-        .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
+    network_prov_mgr_config_t prov_config = {
+        .scheme = network_prov_scheme_ble,
+        .scheme_event_handler = NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
     };
 
     /* Initialize provisioning manager */
-    ESP_ERROR_CHECK(wifi_prov_mgr_init(prov_config));
+    ESP_ERROR_CHECK(network_prov_mgr_init(prov_config));
 
     bool provisioned = false;
-    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+    ESP_ERROR_CHECK(network_prov_mgr_is_wifi_provisioned(&provisioned));
 
     if (!provisioned) {
         ESP_LOGI(TAG, "Starting BLE provisioning");
@@ -170,19 +170,12 @@ esp_err_t app_wifi_init(const char *pop_pin)
         const char *pop = pop_pin ? pop_pin : "abcd1234";
 
         /* Register provisioning event handler */
-        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
+        ESP_ERROR_CHECK(esp_event_handler_register(NETWORK_PROV_EVENT, ESP_EVENT_ANY_ID,
                                                     &wifi_prov_event_handler, NULL));
 
-        /* Set device name in BLE advertisement */
-        uint8_t custom_service_uuid[] = {
-            /* Custom UUID for IR Remote service */
-            0x21, 0xad, 0x07, 0xe6, 0xdd, 0xe2, 0x46, 0x6a,
-            0x95, 0x7f, 0x57, 0x6d, 0x69, 0x72, 0x72, 0x65
-        };
-
         /* Start provisioning */
-        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(
-            WIFI_PROV_SECURITY_1,
+        ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(
+            NETWORK_PROV_SECURITY_1,
             pop,
             service_name,
             service_key));
@@ -198,7 +191,7 @@ esp_err_t app_wifi_init(const char *pop_pin)
         ESP_LOGI(TAG, "Already provisioned, starting WiFi station");
 
         /* Release provisioning resources */
-        wifi_prov_mgr_deinit();
+        network_prov_mgr_deinit();
 
         /* Start WiFi station */
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -226,7 +219,7 @@ esp_err_t app_wifi_reset(void)
     ESP_LOGI(TAG, "Resetting WiFi credentials");
 
     /* Clear provisioning data */
-    esp_err_t ret = wifi_prov_mgr_reset_provisioning();
+    esp_err_t ret = network_prov_mgr_reset_wifi_provisioning();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to reset provisioning: %s", esp_err_to_name(ret));
         return ret;

@@ -1,0 +1,34 @@
+# ESP32 Universal IR Remote - 16MB Flash Partition Table
+# Optimized for 16MB flash (ESP32-S3 with PSRAM)
+#
+# Name,   Type, SubType,  Offset,   Size,    Flags
+#
+# System partitions (required by ESP-IDF)
+nvs,      data, nvs,      0x9000,   24K,
+otadata,  data, ota,      0xf000,   8K,
+phy_init, data, phy,      0x11000,  4K,
+#
+# Factory NVS (for calibration data - readonly)
+fctry,    data, nvs,      0x12000,  4K,      readonly,
+#
+# OTA app partitions (64KB aligned, 4096KB each = 4 MB)
+# Maximum size for complex applications
+ota_0,    app,  ota_0,    0x20000,  4096K,
+ota_1,    app,  ota_1,    0x420000, 4096K,
+#
+# NVS encryption key (4KB aligned)
+nvs_key,  data, nvs_keys, 0x820000, 4K,
+#
+# RainMaker cloud storage (4KB aligned)
+rmaker,   data, nvs,      0x821000, 48K,
+#
+# IR code storage - DEDICATED partition for IR codes
+# 512KB provides storage for ~1280 IR codes (decoded + raw)
+# Survives OTA updates, wear-leveled by NVS
+ir_storage, data, nvs,    0x82d000, 512K,
+#
+# SPIFFS storage partition - uses remaining flash (~7.1 MB)
+# For extensive logs, firmware history, user data, media files
+storage,  data, spiffs,   0x8ad000, 7276K,
+#
+# Total used: ~15.99 MB / 16 MB (10 KB free for alignment)

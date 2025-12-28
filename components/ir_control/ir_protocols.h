@@ -40,7 +40,7 @@ extern "C" {
  */
 typedef struct {
     ir_protocol_t protocol;          // Protocol identifier
-    uint8_t carrier_khz;             // Carrier frequency in kHz (38, 40, 36, 455, etc.)
+    uint16_t carrier_khz;             // Carrier frequency in kHz (38, 40, 36, 455, etc.)
     uint16_t header_mark_us;         // Header mark duration (microseconds)
     uint16_t header_space_us;        // Header space duration (microseconds)
     uint16_t bit_mark_us;            // Bit mark duration (for pulse distance) or "0" mark (for pulse width)
@@ -48,7 +48,7 @@ typedef struct {
     uint16_t zero_space_us;          // Space for "0" bit (pulse distance) or mark for "0" (pulse width)
     uint8_t flags;                   // Protocol flags (MSB/LSB, pulse distance/width, etc.)
     uint16_t repeat_period_ms;       // Time between repeat frames (milliseconds)
-    uint8_t bits;                    // Number of bits (0 = variable length)
+    uint16_t bits;                    // Number of bits (0 = variable length)
 } ir_protocol_constants_t;
 
 /**

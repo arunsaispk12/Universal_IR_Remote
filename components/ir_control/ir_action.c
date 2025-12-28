@@ -13,6 +13,8 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "ir_action";
@@ -25,7 +27,7 @@ static const char *TAG = "ir_action";
 
 /* Internal state */
 static bool is_initialized = false;
-static nvs_handle_t nvs_handle = 0;
+static nvs_handle_t nvs_handle_action = 0;
 
 /* Current learning state */
 static ir_device_type_t learning_device = IR_DEVICE_NONE;
@@ -172,10 +174,10 @@ esp_err_t ir_action_init(void)
         return ESP_OK;
     }
 
-    /* Open NVS namespace for actions */
-    esp_err_t err = nvs_open(NVS_NAMESPACE_ACTIONS, NVS_READWRITE, &nvs_handle);
+    /* Open NVS namespace for actions from dedicated ir_storage partition */
+    esp_err_t err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_ACTIONS, NVS_READWRITE, &nvs_handle_action);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to open NVS namespace from ir_storage partition: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -233,7 +235,7 @@ esp_err_t ir_action_learn(ir_device_type_t device, ir_action_t action, uint32_t 
 }
 
 /* Internal callback when learning succeeds */
-static esp_err_t action_learning_success_cb(ir_button_t button, ir_code_t *code, void *arg)
+static esp_err_t __attribute__((unused)) action_learning_success_cb(ir_button_t button, ir_code_t *code, void *arg)
 {
     if (!is_learning_active) {
         return ESP_OK;
@@ -374,7 +376,7 @@ esp_err_t ir_action_save(ir_device_type_t device, ir_action_t action, const ir_c
 
     /* Save IR code to NVS */
     /* Note: For RAW codes, we need to save raw_data separately */
-    err = nvs_set_blob(nvs_handle, nvs_key, code, sizeof(ir_code_t));
+    err = nvs_set_blob(nvs_handle_action, nvs_key, code, sizeof(ir_code_t));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save action %s: %s", nvs_key, esp_err_to_name(err));
         return err;
@@ -385,7 +387,7 @@ esp_err_t ir_action_save(ir_device_type_t device, ir_action_t action, const ir_c
         char raw_key[MAX_NVS_KEY_LEN + 5];
         snprintf(raw_key, sizeof(raw_key), "%s_raw", nvs_key);
 
-        err = nvs_set_blob(nvs_handle, raw_key, code->raw_data,
+        err = nvs_set_blob(nvs_handle_action, raw_key, code->raw_data,
                             code->raw_length * sizeof(uint16_t));
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to save RAW data for %s: %s", nvs_key, esp_err_to_name(err));
@@ -394,7 +396,7 @@ esp_err_t ir_action_save(ir_device_type_t device, ir_action_t action, const ir_c
     }
 
     /* Commit to NVS */
-    err = nvs_commit(nvs_handle);
+    err = nvs_commit(nvs_handle_action);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
         return err;
@@ -423,7 +425,7 @@ esp_err_t ir_action_load(ir_device_type_t device, ir_action_t action, ir_code_t 
 
     /* Load IR code from NVS */
     size_t required_size = sizeof(ir_code_t);
-    err = nvs_get_blob(nvs_handle, nvs_key, code, &required_size);
+    err = nvs_get_blob(nvs_handle_action, nvs_key, code, &required_size);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_ERR_NOT_FOUND;
     } else if (err != ESP_OK) {
@@ -444,7 +446,7 @@ esp_err_t ir_action_load(ir_device_type_t device, ir_action_t action, ir_code_t 
         }
 
         size_t raw_size = code->raw_length * sizeof(uint16_t);
-        err = nvs_get_blob(nvs_handle, raw_key, code->raw_data, &raw_size);
+        err = nvs_get_blob(nvs_handle_action, raw_key, code->raw_data, &raw_size);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to load RAW data for %s: %s", nvs_key, esp_err_to_name(err));
             free(code->raw_data);
@@ -481,7 +483,7 @@ esp_err_t ir_action_clear(ir_device_type_t device, ir_action_t action)
     }
 
     /* Erase from NVS */
-    err = nvs_erase_key(nvs_handle, nvs_key);
+    err = nvs_erase_key(nvs_handle_action, nvs_key);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_OK; // Already cleared
     } else if (err != ESP_OK) {
@@ -492,10 +494,10 @@ esp_err_t ir_action_clear(ir_device_type_t device, ir_action_t action)
     /* Also erase RAW data if exists */
     char raw_key[MAX_NVS_KEY_LEN + 5];
     snprintf(raw_key, sizeof(raw_key), "%s_raw", nvs_key);
-    nvs_erase_key(nvs_handle, raw_key); // Ignore errors for RAW key
+    nvs_erase_key(nvs_handle_action, raw_key); // Ignore errors for RAW key
 
     /* Commit */
-    err = nvs_commit(nvs_handle);
+    err = nvs_commit(nvs_handle_action);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
         return err;
@@ -533,13 +535,13 @@ esp_err_t ir_action_clear_all(void)
     ESP_LOGI(TAG, "Clearing all action mappings (factory reset)");
 
     /* Erase entire namespace */
-    esp_err_t err = nvs_erase_all(nvs_handle);
+    esp_err_t err = nvs_erase_all(nvs_handle_action);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to erase all actions: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = nvs_commit(nvs_handle);
+    err = nvs_commit(nvs_handle_action);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
         return err;

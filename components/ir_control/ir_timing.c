@@ -13,7 +13,6 @@
 #include "ir_timing.h"
 #include "esp_log.h"
 
-static const char *TAG = "IR_TIMING";
 
 bool ir_timing_matches_percent(uint16_t measured_us, uint16_t expected_us, uint8_t tolerance_percent) {
     // Calculate tolerance in microseconds

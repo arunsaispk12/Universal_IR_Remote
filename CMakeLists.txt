@@ -3,8 +3,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Set the target
-set(IDF_TARGET "esp32")
+# Target is set via 'idf.py set-target <target>' - do not hardcode here
 
 # Read version from version.txt
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/version.txt" PROJECT_VER)

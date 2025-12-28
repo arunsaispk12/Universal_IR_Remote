@@ -109,7 +109,7 @@ static uint8_t calculate_byte_sum(const uint8_t *data, size_t len)
 /**
  * @brief Reverse bits in a byte (for MSB-first protocols)
  */
-static uint8_t reverse_bits(uint8_t byte)
+static uint8_t __attribute__((unused)) reverse_bits(uint8_t byte)
 {
     uint8_t result = 0;
     for (int i = 0; i < 8; i++) {

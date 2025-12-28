@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+n## [3.3.0] - 2025-12-29
+
+### 🎯 Feature Release - Multi-SOC Support & Storage Optimization
+
+This release adds support for multiple ESP32 SoCs and implements intelligent partition tables that scale with flash size.
+
+### Added - Multi-Platform Support
+
+1. **Multi-SOC Architecture**
+   - ESP32 support (original platform, 4MB flash)
+   - ESP32-S3 support (high-performance, 4MB/8MB/16MB flash)
+   - ESP32-C3 support (RISC-V compact, 4MB flash)
+   - ESP32-S2 support (cost-optimized, 4MB flash)
+   - No code changes required - use `idf.py set-target <target>` to build
+
+2. **Intelligent Partition Tables**
+   - `partitions_4MB.csv` - Default (1920KB OTA, 140KB IR storage)
+   - `partitions_8MB.csv` - 8MB flash (3072KB OTA, 256KB IR storage, 1.3MB SPIFFS)
+   - `partitions_16MB.csv` - 16MB flash (4096KB OTA, 512KB IR storage, 7.1MB SPIFFS)
+   - Automatic scaling based on flash size
+   - SPIFFS support on 8MB/16MB for logs, backups, data storage
+
+3. **Documentation**
+   - `PARTITION_TABLES.md` - Complete partition table guide
+   - `SPIFFS_USAGE.md` - SPIFFS file system usage guide
+   - `RELEASE_NOTES_v3.3.0.md` - Detailed release notes
+
+### Fixed - Critical Storage Issues
+
+1. **IR Storage Isolation (CRITICAL)**
+   - **Issue**: IR codes stored in default NVS, could be lost during OTA updates
+   - **Impact**: IR codes not guaranteed to survive firmware updates
+   - **Fix**: All IR storage now uses dedicated `ir_storage` partition via `nvs_open_from_partition()`
+   - **Files Modified**:
+     - `components/ir_control/ir_action.c` - Action mappings now use ir_storage
+     - `components/ir_control/ir_ac_state.c` - AC state now uses ir_storage
+     - `components/ir_control/ir_control.c` - All learned codes now use ir_storage (5 locations)
+   - **Benefit**: IR codes guaranteed to survive OTA updates
+
+2. **Partition Table Validation**
+   - Fixed `fctry` partition marked as readonly (required for <12KB NVS partitions)
+   - Verified proper 64KB alignment for app partitions
+   - Verified proper 4KB alignment for data partitions
+   - Validated no partition overlaps
+
+3. **Multi-Target Build Support**
+   - Removed hardcoded `set(IDF_TARGET "esp32")` from CMakeLists.txt
+   - Removed hardcoded `CONFIG_IDF_TARGET="esp32"` from sdkconfig.defaults
+   - Target now set dynamically via `idf.py set-target` command
+
+### Changed - Configuration
+
+1. **Partition Layout** (4MB default)
+   - System NVS: 20KB → 24KB (increased for flexibility)
+   - OTA partitions: 1920KB each (unchanged, fits 1.79MB binary + 130KB growth)
+   - IR Storage: 108KB → 140KB (more IR codes: 350 vs 270)
+   - Total: ~3.99 MB / 4 MB
+
+2. **Build System**
+   - CMakeLists.txt: Target selection now dynamic
+   - sdkconfig.defaults: Target-agnostic configuration
+
+### Performance
+
+- Binary Size (ESP32): ~1.79 MB
+- Binary Size (ESP32-S3): ~1.82 MB
+- IR Code Capacity:
+  - 4MB flash: ~350 codes
+  - 8MB flash: ~640 codes
+  - 16MB flash: ~1280 codes
+
+### Migration Notes
+
+- **Existing 4MB deployments**: No action required, backward compatible
+- **Upgrading to 8MB/16MB**: Requires flash erase and partition table change
+- **Switching SOCs**: Clean build required with `idf.py set-target <target>`
+
+
 ## [3.2.1] - 2025-12-27
 
 ### 🐛 Bug Fixes - Critical AC Learning & Decoding

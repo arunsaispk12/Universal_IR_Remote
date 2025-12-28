@@ -42,6 +42,8 @@
 #include "esp_rmaker_ota.h"
 #include "esp_rmaker_schedule.h"
 #include "esp_rmaker_console.h"
+#include "esp_rmaker_utils.h"
+#include "rmaker_devices.h"
 
 /* Application headers */
 #include "app_config.h"
