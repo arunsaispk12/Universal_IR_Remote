@@ -79,6 +79,15 @@ esp_err_t ir_ac_state_init(void)
         return ESP_OK;
     }
 
+    /* Initialize NVS partition if needed (shared with ir_action) */
+    esp_err_t err = nvs_flash_init_partition("ir_storage");
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "ir_storage partition needs to be erased, erasing...");
+        ESP_ERROR_CHECK(nvs_flash_erase_partition("ir_storage"));
+        err = nvs_flash_init_partition("ir_storage");
+    }
+    /* Ignore if already initialized by ir_action */
+
     /* Open NVS namespace for AC state from dedicated ir_storage partition */
     esp_err_t err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_AC, NVS_READWRITE, &nvs_handle_ac);
     if (err != ESP_OK) {

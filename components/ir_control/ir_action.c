@@ -174,8 +174,20 @@ esp_err_t ir_action_init(void)
         return ESP_OK;
     }
 
+    /* Initialize NVS partition if needed */
+    esp_err_t err = nvs_flash_init_partition("ir_storage");
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "ir_storage partition needs to be erased, erasing...");
+        ESP_ERROR_CHECK(nvs_flash_erase_partition("ir_storage"));
+        err = nvs_flash_init_partition("ir_storage");
+    }
+    if (err != ESP_OK && err != ESP_ERR_NVS_PART_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to initialize ir_storage partition: %s", esp_err_to_name(err));
+        return err;
+    }
+
     /* Open NVS namespace for actions from dedicated ir_storage partition */
-    esp_err_t err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_ACTIONS, NVS_READWRITE, &nvs_handle_action);
+    err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_ACTIONS, NVS_READWRITE, &nvs_handle_action);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS namespace from ir_storage partition: %s", esp_err_to_name(err));
         return err;
