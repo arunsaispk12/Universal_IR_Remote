@@ -17,7 +17,7 @@
 static const char *TAG = "rgb_led";
 
 // Default configuration
-#define RGB_LED_DEFAULT_GPIO        22
+#define RGB_LED_DEFAULT_GPIO        11  // ESP32-S3 compatible GPIO
 #define RGB_LED_DEFAULT_COUNT       1
 #define RGB_LED_RMT_RESOLUTION_HZ   10000000  // 10MHz resolution, 1 tick = 0.1us
 #define RGB_LED_TASK_STACK_SIZE     2048

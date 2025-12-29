@@ -1,12 +1,79 @@
+# ESP-IDF Build System
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults.old
+*.pyc
+
+# Dependencies
+dependencies.lock
+dependencies/
+managed_components/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake
 CMakeLists.txt.user
 CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
+CMakeFiles/
+CMakeScripts/
+Testing/
 Makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
-_deps
+_deps/
 CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.venv/
+
+# Backup files
+*.bak
+*.old
+*.backup
+*~
+
+# OS Files
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Logs
+*.log
+log/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Flash downloads (optional - uncomment if you don't want to track these)
+# *.bin
+# *.elf
+# *.map
+
+# Partition table generated files (keep source CSV)
+# partition_table/
+
+# Keep documentation and source files
+!*.md
+!*.c
+!*.h
+!*.cpp
+!*.hpp
+!*.csv
+!*.txt
+!CMakeLists.txt

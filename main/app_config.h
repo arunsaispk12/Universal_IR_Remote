@@ -17,7 +17,7 @@
 #define GPIO_IR_RX              18  // IR Receiver (IRM-3638T, active-LOW)
 
 // Status LED
-#define GPIO_RGB_LED            22  // WS2812B RGB LED
+#define GPIO_RGB_LED            11  // WS2812B RGB LED (ESP32-S3 compatible)
 
 // Boot Button (for factory reset)
 #define GPIO_BOOT_BUTTON        0   // Boot button (active-LOW)
