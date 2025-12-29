@@ -77,3 +77,4 @@ log/
 !*.csv
 !*.txt
 !CMakeLists.txt
+nul
