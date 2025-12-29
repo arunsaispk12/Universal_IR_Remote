@@ -89,7 +89,7 @@ esp_err_t ir_ac_state_init(void)
     /* Ignore if already initialized by ir_action */
 
     /* Open NVS namespace for AC state from dedicated ir_storage partition */
-    esp_err_t err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_AC, NVS_READWRITE, &nvs_handle_ac);
+    err = nvs_open_from_partition("ir_storage", NVS_NAMESPACE_AC, NVS_READWRITE, &nvs_handle_ac);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS namespace from ir_storage partition: %s", esp_err_to_name(err));
         return err;
