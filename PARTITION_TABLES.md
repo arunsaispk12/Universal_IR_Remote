@@ -65,28 +65,7 @@ This project supports multiple flash sizes with optimized partition tables for e
 
 ## How to Switch Partition Tables
 
-### Method 1: Update partitions.csv (Recommended for Build)
-
-Copy the desired partition table to `partitions.csv`:
-
-```bash
-# For 4MB flash (default)
-cp partitions_4MB.csv partitions.csv
-
-# For 8MB flash
-cp partitions_8MB.csv partitions.csv
-
-# For 16MB flash
-cp partitions_16MB.csv partitions.csv
-```
-
-Then build normally:
-```bash
-idf.py build
-idf.py flash
-```
-
-### Method 2: Use Custom Partition Table in menuconfig
+### Method 1: Use Custom Partition Table in menuconfig
 
 ```bash
 idf.py menuconfig
@@ -96,7 +75,7 @@ Navigate to:
 ```
 Partition Table →
   Partition Table → Custom partition table CSV
-  Custom partition CSV file → (change to partitions_8MB.csv or partitions_16MB.csv)
+  Custom partition CSV file → (set to partitions_4MB.csv, partitions_8MB.csv, or partitions_16MB.csv)
 ```
 
 Save and exit, then build:
@@ -105,7 +84,7 @@ idf.py build
 idf.py flash
 ```
 
-### Method 3: Command Line Override
+### Method 2: Command Line Override
 
 Specify partition table during build:
 ```bash

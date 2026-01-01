@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(du:*)",
+      "Bash(tree:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(cmp:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nchore: clean up project structure and remove duplicate files\n\nRemove backup files, duplicates, and auto-generated files to maintain\na professional and clean repository structure.\n\nChanges:\n- Remove backup files (.bak, .backup, app_main_v2_backup.c)\n- Remove duplicate partition files (partitions.csv, partitions_optimized.csv)\n- Untrack auto-generated files (sdkconfig, dependencies.lock, managed_components)\n- Remove obsolete documentation (RELEASE_NOTES_v2.3.0.md)\n- Remove hardcoded build script (build_fix.bat)\n- Update partition table references to use partitions_4MB.csv explicitly\n- Update PARTITION_TABLES.md to reflect new structure\n\nThe project now maintains only essential source files and configurations.\nAuto-generated files will be recreated during build process.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")"
+    ]
+  }
+}
