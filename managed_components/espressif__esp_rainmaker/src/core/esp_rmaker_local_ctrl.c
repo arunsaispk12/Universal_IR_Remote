@@ -18,26 +18,28 @@
 #include <nvs.h>
 #include <esp_event.h>
 #include <esp_local_ctrl.h>
+#include <wifi_provisioning/manager.h>
 #include <esp_rmaker_internal.h>
 #include <esp_rmaker_standard_services.h>
 #include <esp_https_server.h>
 #include <esp_rmaker_work_queue.h>
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI
 #include <mdns.h>
-#endif
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
-#include <esp_openthread.h>
-#include <esp_openthread_lock.h>
-#include <openthread/srp_client.h>
-#include <openthread/srp_client_buffers.h>
-#endif /* CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD */
 #include <esp_rmaker_utils.h>
 
 #include <esp_idf_version.h>
-
-#include <network_provisioning/manager.h>
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 2, 0)
+// Features supported in 4.2
 
 #define ESP_RMAKER_LOCAL_CTRL_SECURITY_TYPE CONFIG_ESP_RMAKER_LOCAL_CTRL_SECURITY
+
+#else
+
+#if CONFIG_ESP_RMAKER_LOCAL_CTRL_SECURITY != 0
+#warning "Local control security type is not supported in idf versions below 4.2. Using sec0 by default."
+#endif
+#define ESP_RMAKER_LOCAL_CTRL_SECURITY_TYPE 0
+
+#endif /* !IDF4.2 */
 
 static const char * TAG = "esp_rmaker_local";
 
@@ -65,7 +67,7 @@ enum property_flags {
 static bool g_local_ctrl_is_started = false;
 
 static char *g_serv_name;
-static bool wait_for_provisioning;
+static bool wait_for_wifi_prov;
 /********* Handler functions for responding to control requests / commands *********/
 
 static esp_err_t get_property_values(size_t props_count,
@@ -262,113 +264,6 @@ static esp_err_t esp_rmaker_local_ctrl_service_disable(void)
     return ESP_OK;
 }
 
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
-#define SRP_MAX_HOST_NAME_LEN 40
-static char srp_host_name[SRP_MAX_HOST_NAME_LEN + 1];
-
-static esp_err_t srp_client_set_host(const char *host_name)
-{
-    if (!host_name || strlen(host_name) > SRP_MAX_HOST_NAME_LEN) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    // Avoid adding the same host name multiple times
-    if (strcmp(srp_host_name, host_name) != 0) {
-        strncpy(srp_host_name, host_name, SRP_MAX_HOST_NAME_LEN);
-        srp_host_name[strnlen(host_name, SRP_MAX_HOST_NAME_LEN)] = 0;
-        esp_openthread_lock_acquire(portMAX_DELAY);
-        otInstance *instance = esp_openthread_get_instance();
-        if (otSrpClientSetHostName(instance, srp_host_name) != OT_ERROR_NONE) {
-            esp_openthread_lock_release();
-            return ESP_FAIL;
-        }
-        if (otSrpClientEnableAutoHostAddress(instance) != OT_ERROR_NONE) {
-            esp_openthread_lock_release();
-            return ESP_FAIL;
-        }
-        esp_openthread_lock_release();
-    }
-    return ESP_OK;
-}
-
-static esp_err_t srp_client_add_local_ctrl_service(const char *serv_name)
-{
-    // We use rainmaker_node_id as the SRP host name
-    static uint8_t rainmaker_node_id_txt_value[SRP_MAX_HOST_NAME_LEN + 1];
-    char *rmaker_node_id = esp_rmaker_get_node_id();
-    if (rmaker_node_id == NULL || strlen(rmaker_node_id) > sizeof(rainmaker_node_id_txt_value)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memcpy(rainmaker_node_id_txt_value, rmaker_node_id, strlen(rmaker_node_id));
-    const static uint8_t text_values[3][23] = {
-        {'/', 'e', 's', 'p', '_', 'l', 'o', 'c', 'a', 'l', '_', 'c', 't', 'r', 'l', '/', 'v', 'e', 'r', 's', 'i', 'o', 'n'},
-        {'/', 'e', 's', 'p', '_', 'l', 'o', 'c', 'a', 'l', '_', 'c', 't', 'r', 'l', '/', 's', 'e', 's', 's', 'i', 'o', 'n'},
-        {'/', 'e', 's', 'p', '_', 'l', 'o', 'c', 'a', 'l', '_', 'c', 't', 'r', 'l', '/', 'c', 'o', 'n', 't', 'r', 'o', 'l'}};
-    static otDnsTxtEntry txt_entries[4] = {
-        {
-            .mKey = "version_endpoint",
-            .mValue = text_values[0],
-            .mValueLength = 23,
-        },
-        {
-            .mKey = "session_endpoint",
-            .mValue = text_values[1],
-            .mValueLength = 23,
-        },
-        {
-            .mKey = "control_endpoint",
-            .mValue = text_values[2],
-            .mValueLength = 23,
-        },
-        {
-            .mKey = "node_id",
-            .mValue = rainmaker_node_id_txt_value,
-            .mValueLength = sizeof(rainmaker_node_id_txt_value),
-        }
-    };
-    txt_entries[3].mValueLength = (uint16_t)strlen(rmaker_node_id);
-    static char s_serv_name[SRP_MAX_HOST_NAME_LEN + 1];
-    strncpy(s_serv_name, serv_name, strnlen(serv_name, sizeof(s_serv_name) - 1));
-    s_serv_name[strnlen(serv_name, sizeof(s_serv_name) - 1)] = 0;
-    static otSrpClientService srp_client_service = {
-        .mName = "_esp_local_ctrl._tcp",
-        .mInstanceName = (const char*)s_serv_name,
-        .mTxtEntries = txt_entries,
-        .mPort = CONFIG_ESP_RMAKER_LOCAL_CTRL_HTTP_PORT,
-        .mNumTxtEntries = 4,
-        .mNext = NULL,
-        .mLease = CONFIG_ESP_RMAKER_LOCAL_CTRL_LEASE_INTERVAL_SECONDS,
-        .mKeyLease = 0,
-    };
-    esp_openthread_lock_acquire(portMAX_DELAY);
-    otInstance *instance = esp_openthread_get_instance();
-    // Try to remove the service registered before adding a new service. If the previous service is not removed,
-    // Adding service will fail with a duplicated instance error. This could happen when the device reboots, which
-    // might result in the wrong resolved IP addresss on the phone app side.
-    (void)otSrpClientRemoveService(instance, &srp_client_service);
-    if (otSrpClientAddService(instance, &srp_client_service) != OT_ERROR_NONE) {
-        esp_openthread_lock_release();
-        return ESP_FAIL;
-    }
-    otSrpClientEnableAutoStartMode(instance, NULL, NULL);
-    esp_openthread_lock_release();
-    return ESP_OK;
-}
-
-static esp_err_t srp_client_clean_up()
-{
-    esp_err_t ret = ESP_OK;
-    esp_openthread_lock_acquire(portMAX_DELAY);
-    otInstance *instance = esp_openthread_get_instance();
-    if (otSrpClientRemoveHostAndServices(instance, false, true) != OT_ERROR_NONE) {
-        ret = ESP_FAIL;
-    }
-    memset(srp_host_name, 0, sizeof(srp_host_name));
-    esp_openthread_lock_release();
-    return ret;
-}
-
-#endif /* CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD */
-
 static esp_err_t __esp_rmaker_start_local_ctrl_service(const char *serv_name)
 {
     if (!serv_name) {
@@ -384,14 +279,8 @@ static esp_err_t __esp_rmaker_start_local_ctrl_service(const char *serv_name)
     https_conf.httpd.ctrl_port = ESP_RMAKER_LOCAL_CTRL_HTTP_CTRL_PORT;
     https_conf.httpd.stack_size = CONFIG_ESP_RMAKER_LOCAL_CTRL_STACK_SIZE;
 
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI
     mdns_init();
     mdns_hostname_set(serv_name);
-#endif
-
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
-    srp_client_set_host(serv_name);
-#endif
 
     esp_local_ctrl_config_t config = {
         .transport = ESP_LOCAL_CTRL_TRANSPORT_HTTPD,
@@ -410,7 +299,11 @@ static esp_err_t __esp_rmaker_start_local_ctrl_service(const char *serv_name)
     };
 
     /* If sec1, add security type details to the config */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #define PROTOCOMM_SEC_DATA protocomm_security1_params_t
+#else
+#define PROTOCOMM_SEC_DATA  protocomm_security_pop_t
+#endif /* ESP_IDF_VERSION */
     PROTOCOMM_SEC_DATA *pop = NULL;
 #if ESP_RMAKER_LOCAL_CTRL_SECURITY_TYPE == 1
         char *pop_str = esp_rmaker_local_ctrl_get_pop();
@@ -431,23 +324,18 @@ static esp_err_t __esp_rmaker_start_local_ctrl_service(const char *serv_name)
 
         config.proto_sec.version = sec_ver;
         config.proto_sec.custom_handle = NULL;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
         config.proto_sec.sec_params = pop;
+#else
+        config.proto_sec.pop = pop;
+#endif /* ESP_IDF_VERSION */
 #endif
 
     /* Start esp_local_ctrl service */
     ESP_ERROR_CHECK(esp_local_ctrl_start(&config));
 
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI
-    /* The instance name of mdns service set by esp_local_ctrl_start is 'Local Control Service'.
-     * We should ensure that each end-device should have an unique instance name.
-     */
-    mdns_service_instance_name_set("_esp_local_ctrl", "_tcp", serv_name);
     /* Add node_id in mdns */
     mdns_service_txt_item_set("_esp_local_ctrl", "_tcp", "node_id", esp_rmaker_get_node_id());
-#endif
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
-    srp_client_add_local_ctrl_service(serv_name);
-#endif
 
     if (pop) {
         free(pop);
@@ -489,22 +377,22 @@ static void esp_rmaker_local_ctrl_prov_event_handler(void* arg, esp_event_base_t
                           int32_t event_id, void* event_data)
 {
     ESP_LOGI(TAG, "Event %"PRIu32, event_id);
-    if (event_base == NETWORK_PROV_EVENT) {
+    if (event_base == WIFI_PROV_EVENT) {
         switch (event_id) {
-            case NETWORK_PROV_START:
-                wait_for_provisioning = true;
+            case WIFI_PROV_START:
+                wait_for_wifi_prov = true;
                 break;
-            case NETWORK_PROV_DEINIT:
-                if (wait_for_provisioning == true) {
-                    wait_for_provisioning = false;
+            case WIFI_PROV_DEINIT:
+                if (wait_for_wifi_prov == true) {
+                    wait_for_wifi_prov = false;
                     if (g_serv_name) {
                         __esp_rmaker_start_local_ctrl_service(g_serv_name);
                         free(g_serv_name);
                         g_serv_name = NULL;
                     }
                 }
-                esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler);
-                esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler);
+                esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler);
+                esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler);
                 break;
             default:
                 break;
@@ -522,14 +410,14 @@ esp_err_t esp_rmaker_init_local_ctrl_service(void)
     /* ESP Local Control uses protocomm_httpd, which is also used by SoftAP Provisioning.
      * If local control is started before provisioning ends, it fails because only one protocomm_httpd
      * instance is allowed at a time.
-     * So, we check for the NETWORK_PROV_START event, and if received, wait for the NETWORK_PROV_DEINIT
-     * event before starting local control.
+     * So, we check for the WIFI_PROV_START event, and if received, wait for the WIFI_PROV_DEINIT event
+     * before starting local control.
      * This would not be required in case of BLE Provisioning, but this code has no easy way of knowing
      * what provisioning transport is being used and hence this logic will come into picture for both,
      * SoftAP and BLE provisioning.
      */
-    esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler, NULL);
-    esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler, NULL);
+    esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler, NULL);
+    esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler, NULL);
     return ESP_OK;
 }
 
@@ -539,7 +427,7 @@ esp_err_t esp_rmaker_start_local_ctrl_service(const char *serv_name)
         esp_rmaker_local_ctrl_service_enable();
     }
 
-    if (!wait_for_provisioning) {
+    if (!wait_for_wifi_prov) {
         return __esp_rmaker_start_local_ctrl_service(serv_name);
     }
 
@@ -572,17 +460,12 @@ esp_err_t esp_rmaker_local_ctrl_disable(void)
         free(g_serv_name);
         g_serv_name = NULL;
     }
-    esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler);
-    esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler);
+    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_START, &esp_rmaker_local_ctrl_prov_event_handler);
+    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_DEINIT, &esp_rmaker_local_ctrl_prov_event_handler);
     if (!g_local_ctrl_is_started) {
         return ESP_OK;
     }
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI
     mdns_free();
-#endif
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
-    srp_client_clean_up();
-#endif
     esp_err_t err = esp_local_ctrl_stop();
     if (err != ESP_OK) {
         return err;

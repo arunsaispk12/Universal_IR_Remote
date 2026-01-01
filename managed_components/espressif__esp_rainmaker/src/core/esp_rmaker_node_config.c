@@ -14,6 +14,7 @@
 #include <sdkconfig.h>
 #include <string.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
 #include <json_generator.h>
 #include <esp_rmaker_core.h>
 #include <esp_rmaker_utils.h>
@@ -22,7 +23,9 @@
 #include "esp_rmaker_mqtt_topics.h"
 #include <esp_rmaker_secure_boot_digest.h>
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include <esp_app_desc.h>
+#endif
 
 #define NODE_CONFIG_TOPIC_SUFFIX        "config"
 
@@ -40,25 +43,26 @@ static esp_err_t esp_rmaker_report_info(json_gen_str_t *jptr)
     if (info->subtype) {
         json_gen_obj_set_string(jptr, "subtype",  info->subtype);
     }
-    if (info->readme && strlen(info->readme) > 0) {
-        json_gen_obj_set_string(jptr, "readme",  info->readme);
-    }
     json_gen_obj_set_string(jptr, "model",  info->model);
     const esp_app_desc_t *app_desc;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     app_desc = esp_app_get_description();
+#else
+    app_desc = esp_ota_get_app_description();
+#endif
     json_gen_obj_set_string(jptr, "project_name", (char *)app_desc->project_name);
     json_gen_obj_set_string(jptr, "platform", CONFIG_IDF_TARGET);
 #ifdef CONFIG_SECURE_BOOT_V2_ENABLED
     json_gen_push_object(jptr, "secure_boot_digest");
     for (int i = 0; i < SECURE_BOOT_NUM_BLOCKS; i++) {
         char key_name[3];
-        snprintf(key_name, sizeof(key_name), "k%d", i);
+        snprintf(&key_name, sizeof(key_name), "k%d", i);
         key_name[2] = '\0';
         if (info->secure_boot_digest[i] == NULL) {
-            json_gen_obj_set_null(jptr, key_name);
+            json_gen_obj_set_null(jptr, &key_name);
             continue;
         }
-        json_gen_obj_set_string(jptr, key_name, info->secure_boot_digest[i]);
+        json_gen_obj_set_string(jptr, &key_name, info->secure_boot_digest[i]);
     }
     json_gen_pop_object(jptr);
 #endif
@@ -297,7 +301,7 @@ esp_err_t esp_rmaker_report_node_config()
     }
     char publish_topic[MQTT_TOPIC_BUFFER_SIZE];
     esp_rmaker_create_mqtt_topic(publish_topic, MQTT_TOPIC_BUFFER_SIZE, NODE_CONFIG_TOPIC_SUFFIX, NODE_CONFIG_TOPIC_RULE);
-    ESP_LOGD(TAG, "Reporting Node Configuration of length %lu bytes.", (unsigned long) strlen(publish_payload));
+    ESP_LOGD(TAG, "Reporting Node Configuration of length %d bytes.", strlen(publish_payload));
     ESP_LOGD(TAG, "%s", publish_payload);
     esp_err_t ret = esp_rmaker_mqtt_publish(publish_topic, publish_payload, strlen(publish_payload),
                         RMAKER_MQTT_QOS1, NULL);

@@ -40,6 +40,7 @@
 #include <esp_rmaker_factory.h>
 #include <esp_rmaker_utils.h>
 
+#include <wifi_provisioning/manager.h>
 #include <esp_event.h>
 #include <esp_tls.h>
 #include <esp_rmaker_core.h>
@@ -55,14 +56,21 @@
 #include "esp_rmaker_client_data.h"
 #include "esp_rmaker_claim.h"
 
-#include <network_provisioning/manager.h>
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 0)
+// Features supported in 4.4+
 
 #ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
 #define ESP_RMAKER_USE_CERT_BUNDLE
 #include <esp_crt_bundle.h>
 #endif
 
-#include "esp_mac.h"
+#else
+
+#ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
+#warning "Certificate Bundle not supported below IDF v4.4. Using provided certificate instead."
+#endif
+
+#endif /* !IDF4.4 */
 
 static const char *TAG = "esp_claim";
 
@@ -236,26 +244,17 @@ static esp_err_t handle_claim_verify_response(esp_rmaker_claim_data_t *claim_dat
         int required_len = 0;
         if (json_obj_get_strlen(&jctx, "certificate", &required_len) == 0) {
             required_len++; /* For NULL termination */
-            char *value_buf =  MEM_CALLOC_EXTRAM(1, required_len);
-            if (!value_buf) {
+            char *certificate =  MEM_CALLOC_EXTRAM(1, required_len);
+            if (!certificate) {
                 json_parse_end(&jctx);
                 ESP_LOGE(TAG, "Failed to allocate %d bytes for certificate.", required_len);
                 return ESP_ERR_NO_MEM;
             }
-            /* Just using the certificate buffer itself (which is expected to be large enough) to
-             * check if the claiming service has also sent an MQTT Host, before going on to read
-             * the certificate itself.
-             */
-            if (json_obj_get_string(&jctx, "mqtt_host", value_buf, required_len) == 0) {
-                ESP_LOGI(TAG, "Storing received MQTT Host: %s", value_buf);
-                esp_rmaker_factory_set(ESP_RMAKER_MQTT_HOST_NVS_KEY, value_buf, strlen(value_buf));
-                memset(value_buf, 0, required_len);
-            }
-            json_obj_get_string(&jctx, "certificate", value_buf, required_len);
+            json_obj_get_string(&jctx, "certificate", certificate, required_len);
             json_parse_end(&jctx);
-            unescape_new_line(value_buf);
-            esp_err_t err = esp_rmaker_factory_set(ESP_RMAKER_CLIENT_CERT_NVS_KEY, value_buf, strlen(value_buf));
-            free(value_buf);
+            unescape_new_line(certificate);
+            esp_err_t err = esp_rmaker_factory_set(ESP_RMAKER_CLIENT_CERT_NVS_KEY, certificate, strlen(certificate));
+            free(certificate);
             return err;
         } else {
             ESP_LOGE(TAG, "Claim Verify Response invalid.");
@@ -270,19 +269,16 @@ static esp_err_t generate_claim_init_request(esp_rmaker_claim_data_t *claim_data
     if (claim_data->state < RMAKER_CLAIM_STATE_PK_GENERATED) {
         return ESP_ERR_INVALID_STATE;
     }
-    uint8_t mac_addr[6];
-    /* ESP_MAC_BASE provides the base MAC address for all chips, supporting both
-     * Wi-Fi and Thread devices
-     */
-    esp_err_t err = esp_read_mac(mac_addr, ESP_MAC_BASE);
+    uint8_t eth_mac[6];
+    esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Could not fetch MAC address.");
+        ESP_LOGE(TAG, "Could not fetch MAC address. Please initialise Wi-Fi first");
         return err;
     }
 
     snprintf(claim_data->payload, sizeof(claim_data->payload),
             "{\"mac_addr\":\"%02X%02X%02X%02X%02X%02X\",\"platform\":\"%s\"}",
-            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5], CONFIG_IDF_TARGET);
+            eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5], CONFIG_IDF_TARGET);
     claim_data->payload_len = strlen(claim_data->payload);
     claim_data->payload_offset = 0;
     return ESP_OK;
@@ -370,9 +366,6 @@ static esp_err_t handle_self_claim_init_response(esp_rmaker_claim_data_t *claim_
                 }
                 json_gen_end_long_string(&jstr);
                 json_gen_obj_set_string(&jstr, "csr", (char *)claim_data->csr);
-#ifdef CONFIG_ESP_RMAKER_CLAIM_VIDEOSTREAM_SUPPORT
-                json_gen_obj_set_string(&jstr, "node_policies", "videostream");
-#endif
                 json_gen_end_object(&jstr);
                 json_gen_str_end(&jstr);
                 return ESP_OK;
@@ -486,19 +479,14 @@ esp_err_t esp_rmaker_self_claim_perform(esp_rmaker_claim_data_t *claim_data)
         ESP_LOGE(TAG, "Self claiming not initialised.");
         return ESP_ERR_INVALID_STATE;
     }
-    esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
     esp_err_t err = esp_rmaker_claim_perform_init(claim_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Claim Init Sequence Failed.");
-        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
         return err;
     }
     err = esp_rmaker_claim_perform_verify(claim_data);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Self Claiming was successful. Certificate received.");
-        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
-    } else {
-        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
     }
     esp_rmaker_claim_data_free(claim_data);
     return err;
@@ -572,7 +560,6 @@ static esp_err_t handle_assisted_claim_init_response(esp_rmaker_claim_data_t *cl
             json_gen_str_start(&jstr, claim_data->payload, sizeof(claim_data->payload), NULL, NULL);
             json_gen_start_object(&jstr);
             json_gen_obj_set_string(&jstr, "csr", (char *)claim_data->csr);
-            json_gen_obj_set_bool(&jstr, "send_mqtt_host", true);
             json_gen_end_object(&jstr);
             json_gen_str_end(&jstr);
             claim_data->payload_len = strlen(claim_data->payload);
@@ -606,7 +593,6 @@ esp_err_t esp_rmaker_assisted_claim_handle_start(RmakerClaim__RMakerClaimPayload
     response->resppayload->status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__Success;
     claim_data->state = RMAKER_CLAIM_STATE_INIT;
     ESP_LOGI(TAG, "Assisted Claiming Started.");
-    esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
     return ESP_OK;
 }
 
@@ -735,16 +721,11 @@ esp_err_t esp_rmaker_assisted_claim_handle_verify(RmakerClaim__RMakerClaimPayloa
         if (handle_claim_verify_response(claim_data) == ESP_OK) {
             ESP_LOGI(TAG,"Assisted Claiming was Successful.");
             claim_data->state = RMAKER_CLAIM_STATE_VERIFY_DONE;
-            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
             if (claim_event_group) {
                 xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
             }
         } else {
-            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
             response->resppayload->status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__InvalidParam;
-            if (claim_event_group) {
-                xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
-            }
             return ESP_OK;
         }
     }
@@ -803,10 +784,6 @@ esp_err_t esp_rmaker_claiming_handler(uint32_t session_id, const uint8_t *inbuf,
             claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
             resppayload.status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__Success;
             ESP_LOGW(TAG, "Assisted Claiming Aborted.");
-            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
-            if (claim_event_group) {
-                xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
-            }
             break;
         default:
             break;
@@ -821,22 +798,18 @@ esp_err_t esp_rmaker_claiming_handler(uint32_t session_id, const uint8_t *inbuf,
 static void event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
-    if (event_base == NETWORK_PROV_EVENT) {
+    if (event_base == WIFI_PROV_EVENT) {
         switch (event_id) {
-            case NETWORK_PROV_INIT: {
-#ifdef CONFIG_ESP_RMAKER_CLAIM_VIDEOSTREAM_SUPPORT
-                static const char *capabilities[] = {"camera_claim"};
-#else
+            case WIFI_PROV_INIT: {
                 static const char *capabilities[] = {"claim"};
-#endif
-                network_prov_mgr_set_app_info("rmaker", "1.0", capabilities, 1);
-                if (network_prov_mgr_endpoint_create(CLAIM_ENDPOINT) != ESP_OK) {
+                wifi_prov_mgr_set_app_info("rmaker", "1.0", capabilities, 1);
+                if (wifi_prov_mgr_endpoint_create(CLAIM_ENDPOINT) != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to create claim end point.");
                 }
                 break;
             }
-            case NETWORK_PROV_START:
-                if (network_prov_mgr_endpoint_register(CLAIM_ENDPOINT, esp_rmaker_claiming_handler, arg) != ESP_OK) {
+            case WIFI_PROV_START:
+                if (wifi_prov_mgr_endpoint_register(CLAIM_ENDPOINT, esp_rmaker_claiming_handler, arg) != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to register claim end point.");
                 }
                 break;
@@ -936,13 +909,10 @@ static esp_rmaker_claim_data_t *esp_rmaker_claim_init(void)
         ESP_LOGE(TAG, "Claim already initialised");
         return NULL;
     }
-    /* Create event group if it doesn't exist (for assisted claiming, it may already exist) */
+    claim_event_group = xEventGroupCreate();
     if (!claim_event_group) {
-        claim_event_group = xEventGroupCreate();
-        if (!claim_event_group) {
-            ESP_LOGE(TAG, "Couldn't create event group");
-            return NULL;
-        }
+        ESP_LOGE(TAG, "Couldn't create event group");
+        return NULL;
     }
     esp_rmaker_claim_data_t *claim_data = NULL;
 
@@ -953,23 +923,14 @@ static esp_rmaker_claim_data_t *esp_rmaker_claim_init(void)
     if (xTaskCreate(&esp_rmaker_claim_task, "claim_task", ESP_RMAKER_CLAIM_TASK_STACK_SIZE,
                 &claim_data, tskIDLE_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Couldn't create Claim task");
-        /* On failure, delete event group and reset handle */
         vEventGroupDelete(claim_event_group);
-        claim_event_group = NULL;
         return NULL;
     }
 
     /* Wait for claim init to complete */
     xEventGroupWaitBits(claim_event_group, CLAIM_TASK_BIT, false, true, portMAX_DELAY);
-#ifdef CONFIG_ESP_RMAKER_SELF_CLAIM
-    /* For self-claiming, delete event group after PK generation */
     vEventGroupDelete(claim_event_group);
     claim_event_group = NULL;
-#else
-    /* For assisted claiming, clear the bit as it would be re-used later*/
-    xEventGroupClearBits(claim_event_group, CLAIM_TASK_BIT);
-#endif
-    /* For assisted claiming, keep event group for claiming completion signaling */
     return claim_data;
 }
 
@@ -987,35 +948,32 @@ esp_err_t esp_rmaker_assisted_claim_perform(esp_rmaker_claim_data_t *claim_data)
         ESP_LOGE(TAG, "Assisted claiming not initialised.");
         return ESP_ERR_INVALID_STATE;
     }
+    claim_event_group = xEventGroupCreate();
     if (!claim_event_group) {
-        ESP_LOGE(TAG, "Claim event group not created.");
-        return ESP_ERR_INVALID_STATE;
+        ESP_LOGE(TAG, "Couldn't create event group");
+        return ESP_ERR_NO_MEM;
     }
-    /* Wait for assisted claim to complete (returns immediately if bit already set) */
+    /* Wait for assisted claim to complete */
     ESP_LOGI(TAG, "Waiting for assisted claim to finish.");
     xEventGroupWaitBits(claim_event_group, CLAIM_TASK_BIT, false, true, portMAX_DELAY);
     esp_err_t err = ESP_FAIL;
     if (claim_data->state == RMAKER_CLAIM_STATE_VERIFY_DONE) {
         err = ESP_OK;
     }
-    esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &event_handler);
-    esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_START, &event_handler);
+    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_INIT, &event_handler);
+    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_START, &event_handler);
     esp_rmaker_claim_data_free(claim_data);
     vEventGroupDelete(claim_event_group);
-    claim_event_group = NULL;
     return err;
 }
 esp_rmaker_claim_data_t *esp_rmaker_assisted_claim_init(void)
 {
     ESP_LOGI(TAG, "Initialising Assisted Claiming. This may take time.");
-    /* esp_rmaker_claim_init() will create the event group, and for assisted claiming,
-     * it will be kept after PK generation for claiming completion signaling */
     esp_rmaker_claim_data_t *claim_data = esp_rmaker_claim_init();
     if (claim_data) {
-        esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &event_handler, claim_data);
-        esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_START, &event_handler, claim_data);
+        esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_INIT, &event_handler, claim_data);
+        esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_START, &event_handler, claim_data);
     }
-    /* If claim init failed, event group is already cleaned up in esp_rmaker_claim_init() */
     return claim_data;
 }
 #endif

@@ -12,35 +12,13 @@ set(core_srcs "src/core/esp_rmaker_core.c"
         "src/core/esp_rmaker_node_auth.c"
         "src/core/esp_rmaker_schedule.c"
         "src/core/esp_rmaker_scenes.c"
-        "src/core/esp_rmaker_groups.c"
+        "src/core/esp_rmaker_cmd_resp_manager.c"
         "src/core/esp_rmaker_secure_boot_digest.c"
-        "src/core/esp_rmaker_aws_credentials.c"
-    )
+        )
 
-set(priv_req protobuf-c json_parser json_generator
+set(priv_req protobuf-c json_parser json_generator wifi_provisioning
              nvs_flash esp_http_client app_update esp-tls mbedtls esp_https_ota
-             console esp_local_ctrl esp_https_server mdns esp_schedule esp_daylight efuse driver rmaker_common)
-
-if (CONFIG_ESP_RMAKER_CMD_RESP_ENABLE)
-    list(APPEND core_srcs "src/core/esp_rmaker_cmd_resp_manager.c")
-endif()
-
-if (CONFIG_ESP_RMAKER_PARAM_CMD_RESP_ENABLE)
-    list(APPEND core_srcs "src/core/esp_rmaker_param_cmd_resp.c")
-endif()
-
-# Add CBOR for MQTT OTA support
-if (CONFIG_ESP_RMAKER_OTA_USE_MQTT)
-    list(APPEND priv_req cbor)
-endif()
-
-list(APPEND priv_req esp_app_format openthread network_provisioning)
-
-if(CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE)
-    list(APPEND core_srcs
-        "src/core/esp_rmaker_chal_resp.c"
-        "src/core/esp_rmaker_chal_resp.pb-c.c")
-endif()
+             console esp_local_ctrl esp_https_server mdns esp_schedule efuse driver rmaker_common)
 
 if(CONFIG_ESP_RMAKER_ASSISTED_CLAIM)
     list(APPEND core_srcs
@@ -69,26 +47,6 @@ set(ota_srcs "src/ota/esp_rmaker_ota.c"
         "src/ota/esp_rmaker_ota_using_params.c"
         "src/ota/esp_rmaker_ota_using_topics.c")
 set(ota_priv_includes "src/ota")
-if (CONFIG_ESP_RMAKER_OTA_USE_MQTT)
-    list(APPEND ota_srcs "src/ota/esp_rmaker_mqtt_ota.c")
-endif()
-if (CONFIG_ESP_RMAKER_OTA_USE_HTTPS)
-    list(APPEND ota_srcs "src/ota/esp_rmaker_https_ota.c")
-endif()
-
-# Thread BR
-set(thread_br_srcs )
-set(thread_br_priv_includes )
-if (CONFIG_OPENTHREAD_BORDER_ROUTER)
-    list(APPEND thread_br_srcs "src/thread_br/esp_rmaker_thread_br.c"
-            "src/thread_br/esp_rmaker_thread_br_service.c"
-            "src/thread_br/esp_rmaker_thread_br_internal.c"
-            "src/thread_br/esp_rmaker_thread_br_launcher.c")
-    list(APPEND thread_br_priv_includes "src/thread_br")
-endif()
-
-# RainMaker Controller
-set(rainmaker_controller_srcs "src/rainmaker_controller/esp_rmaker_controller.c")
 
 # CONSOLE
 set(console_srcs "src/console/esp_rmaker_console.c"
@@ -100,9 +58,9 @@ set(standard_types_srcs "src/standard_types/esp_rmaker_standard_params.c"
         "src/standard_types/esp_rmaker_standard_devices.c"
         "src/standard_types/esp_rmaker_standard_services.c")
 
-idf_component_register(SRCS ${core_srcs} ${mqtt_srcs} ${ota_srcs} ${standard_types_srcs} ${console_srcs} ${thread_br_srcs} ${rainmaker_controller_srcs}
+idf_component_register(SRCS ${core_srcs} ${mqtt_srcs} ${ota_srcs} ${standard_types_srcs} ${console_srcs}
                        INCLUDE_DIRS "include"
-                       PRIV_INCLUDE_DIRS ${core_priv_includes} ${ota_priv_includes} ${console_priv_includes} ${mqtt_priv_includes} ${thread_br_priv_includes} ${rainmaker_controller_priv_includes}
+                       PRIV_INCLUDE_DIRS ${core_priv_includes} ${ota_priv_includes} ${console_priv_includes} ${mqtt_priv_includes}
                        REQUIRES rmaker_common
                        PRIV_REQUIRES ${priv_req})
 

@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <esp_idf_version.h>
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
 #include <esp_sntp.h>
+#else
+#include <lwip/apps/sntp.h>
+#endif
 
 #include <string.h>
-#include <time.h>
 #include <inttypes.h>
 #include <esp_log.h>
 #include <nvs.h>
@@ -39,6 +43,30 @@ extern const char *esp_rmaker_tz_db_get_posix_str(const char *name);
 
 int esp_setenv(const char *name, const char *value, int rewrite)
 {
+/* IDF version lower than v4.4.3 not support parse bracket POSIX TZ in newlib.
+   Wrap setenv function to convert bracket POSIX TZ, such as <+08>-8 to TZ-08 */
+#if ESP_IDF_VERSION <= ESP_IDF_VERSION_VAL(4, 4, 3)
+#define ESP_TZNAME_MIN 3
+#define ESP_TZNAME_MAX 10
+    if (value) {
+        const char *tzenv = value;
+        if (*tzenv == '<') {
+            ++ tzenv;
+            char tzname[ESP_TZNAME_MIN + 1] = {0};
+            char real_value[6] = {0};
+            int n = 0;
+            if (sscanf(tzenv, "%10[-+0-9A-Za-z]%n", tzname, &n) <= 0 || n < ESP_TZNAME_MIN || n > ESP_TZNAME_MAX || '>' != tzenv[n]) {
+                ESP_LOGW(TAG, "Failed to convert Posix TZ %s", value);
+                goto exit;
+            }
+            tzname[0] = (tzname[0] == '-') ? '+' : '-';
+            sprintf(real_value, "TZ%s", tzname);
+            ESP_LOGI(TAG, "Real Posix TZ is %s", real_value);
+            return setenv(name, real_value, rewrite);
+        }
+    }
+exit:
+#endif
     return setenv(name, value, rewrite);
 }
 
@@ -172,7 +200,11 @@ static void esp_rmaker_time_sync_cb(struct timeval *tv)
 
 esp_err_t esp_rmaker_time_sync_init(esp_rmaker_time_config_t *config)
 {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
     if (esp_sntp_enabled()) {
+#else
+    if (sntp_enabled()) {
+#endif
         ESP_LOGI(TAG, "SNTP already initialized.");
         init_done = true;
         return ESP_OK;
@@ -184,9 +216,15 @@ esp_err_t esp_rmaker_time_sync_init(esp_rmaker_time_config_t *config)
         sntp_server_name = config->sntp_server_name;
     }
     ESP_LOGI(TAG, "Initializing SNTP. Using the SNTP server: %s", sntp_server_name);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, sntp_server_name);
     esp_sntp_init();
+#else
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, sntp_server_name);
+    sntp_init();
+#endif
     if (config && config->sync_time_cb) {
         sntp_set_time_sync_notification_cb(config->sync_time_cb);
     } else {
@@ -205,171 +243,6 @@ bool esp_rmaker_time_check(void)
         return true;
     }
     return false;
-}
-
-
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
-#include <stdlib.h>
-#include <stdint.h>
-
-/* ---- UTC converter with no setenv/timegm dependency ---- */
-static inline int is_leap(int y) {
-    return ((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0);
-}
-
-/* Interprets tm as UTC and returns epoch seconds */
-static inline time_t rmaker_timegm(struct tm *tm)
-{
-    /* Normalize month to [0,11] */
-    int year  = tm->tm_year + 1900;
-    int month = tm->tm_mon;
-    if (month < 0) { year += (month - 11) / 12; month = 12 + (month % 12); }
-    else if (month > 11) { year += month / 12; month %= 12; }
-
-    static const int mdays_cum[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-    int64_t days = 0;
-    if (year >= 1970) for (int y = 1970; y < year; ++y) days += 365 + is_leap(y);
-    else              for (int y = year;  y < 1970; ++y) days -= 365 + is_leap(y);
-
-    days += mdays_cum[month];
-    if (month > 1 && is_leap(year)) days += 1;
-    days += (tm->tm_mday - 1);
-
-    int64_t seconds = days * 86400LL
-                    + (int64_t)tm->tm_hour * 3600
-                    + (int64_t)tm->tm_min  * 60
-                    + (int64_t)tm->tm_sec;
-
-    return (time_t)seconds;
-}
-
-/* Supports "YYYY-MM-DDTHH:MM:SSZ" and "YYYY-MM-DDTHH:MM:SS[+-]HH:MM" */
-time_t iso8601_to_epoch(const char *iso_string) {
-    struct tm tm_info = {0};
-    int year, month, day, hour, minute, second;
-    int tz_hour = 0, tz_minute = 0;
-    char tz_sign = '+';
-
-    if (sscanf(iso_string, "%d-%d-%dT%d:%d:%d%c%d:%d",
-               &year, &month, &day, &hour, &minute, &second,
-               &tz_sign, &tz_hour, &tz_minute) == 9) {
-        /* parsed with offset */
-    } else if (sscanf(iso_string, "%d-%d-%dT%d:%d:%dZ",
-                      &year, &month, &day, &hour, &minute, &second) == 6) {
-        tz_hour = 0; tz_minute = 0; tz_sign = '+';
-    } else {
-        ESP_LOGE(TAG, "Error: Invalid ISO 8601 format.\n");
-        return (time_t)-1;
-    }
-
-    tm_info.tm_year  = year - 1900;
-    tm_info.tm_mon   = month - 1;
-    tm_info.tm_mday  = day;
-    tm_info.tm_hour  = hour;
-    tm_info.tm_min   = minute;
-    tm_info.tm_sec   = second;
-    tm_info.tm_isdst = -1; /* let system decide DST for this broken-down time */
-
-    /* Interpret parsed wall-clock as system-local */
-    time_t local_epoch = mktime(&tm_info);
-    if (local_epoch == (time_t)-1) {
-        ESP_LOGE(TAG, "Error: mktime() failed.\n");
-        return (time_t)-1;
-    }
-
-    /* Compute system offset (local - UTC) at that instant WITHOUT touching TZ */
-    struct tm tmp_local;
-    localtime_r(&local_epoch, &tmp_local);
-    tmp_local.tm_isdst = -1;                   /* recompute DST if needed */
-    /* Treat the same wall-clock fields as if they were UTC: */
-    time_t utc_from_local_as_utc = rmaker_timegm(&tmp_local);
-    int64_t sys_offset = (int64_t)utc_from_local_as_utc - (int64_t)local_epoch;
-
-    /* parsed offset (timestamp's zone) */
-    int64_t parsed_offset = (int64_t)tz_hour * 3600 + (int64_t)tz_minute * 60;
-    if (tz_sign == '-') parsed_offset = -parsed_offset;
-
-    /* FINAL: Add the system-local offset and the parsed offset (timezone offset) */
-    int64_t final_epoch64 = (int64_t)local_epoch + sys_offset - parsed_offset;
-    return (time_t)final_epoch64;
-}
-
-esp_err_t esp_rmaker_time_convert_iso8601_to_epoch(const char *str, int len, time_t *out_epoch)
-{
-    if (!str || !out_epoch) {
-        return ESP_FAIL;
-    }
-
-    char buf[64];
-    int copy_len = 0;
-    if (len > 0) {
-        copy_len = (len < (int)sizeof(buf) - 1) ? len : (int)sizeof(buf) - 1;
-    } else {
-        size_t str_len = strlen(str);
-        copy_len = (str_len < sizeof(buf) - 1) ? (int)str_len : (int)sizeof(buf) - 1;
-    }
-    memcpy(buf, str, copy_len);
-    buf[copy_len] = '\0';
-
-    struct tm tm_utc = {0};
-    int year, month, day, hour, minute, second;
-    int tz_hour = 0, tz_minute = 0;
-    char tz_sign = '+';
-
-    /* Number of fields expected for each format */
-    #define ISO8601_WITH_TIMEZONE_FIELDS    9  /* year, month, day, hour, minute, second, tz_sign, tz_hour, tz_minute */
-    #define ISO8601_UTC_FIELDS              6  /* year, month, day, hour, minute, second */
-
-    /* Try parsing with timezone offset: "YYYY-MM-DDTHH:MM:SS[+-]HH:MM" */
-    if (sscanf(buf, "%d-%d-%dT%d:%d:%d%c%d:%d",
-               &year, &month, &day, &hour, &minute, &second,
-               &tz_sign, &tz_hour, &tz_minute) == ISO8601_WITH_TIMEZONE_FIELDS) {
-        /* Timezone offset format parsed successfully */
-    } else if (sscanf(buf, "%d-%d-%dT%d:%d:%dZ",
-                      &year, &month, &day, &hour, &minute, &second) == ISO8601_UTC_FIELDS) {
-        /* UTC format - validate that 'Z' is present at position 19 */
-        size_t buf_len = strlen(buf);
-        if (buf_len < 20 || buf[19] != 'Z') {
-            ESP_LOGE(TAG, "Invalid ISO 8601 format: '%s' (missing Z suffix)", buf);
-            return ESP_FAIL;
-        }
-        tz_hour = 0;
-        tz_minute = 0;
-        tz_sign = '+';
-    } else {
-        ESP_LOGE(TAG, "Invalid ISO 8601 format: '%s'", buf);
-        return ESP_FAIL;
-    }
-
-    /* Fill tm structure with parsed values */
-    tm_utc.tm_year = year - 1900;
-    tm_utc.tm_mon = month - 1;
-    tm_utc.tm_mday = day;
-    tm_utc.tm_hour = hour;
-    tm_utc.tm_min = minute;
-    tm_utc.tm_sec = second;
-    tm_utc.tm_isdst = 0; /* No DST in UTC */
-
-    /* Calculate timezone offset in seconds */
-    int total_offset_seconds = (tz_hour * 3600) + (tz_minute * 60);
-    if (tz_sign == '-') {
-        total_offset_seconds = -total_offset_seconds;
-    }
-
-    /* Convert to epoch time using timezone-independent rmaker_timegm */
-    time_t utc_epoch = rmaker_timegm(&tm_utc);
-    if (utc_epoch == (time_t)-1) {
-        ESP_LOGE(TAG, "rmaker_timegm failed");
-        return ESP_FAIL;
-    }
-
-    /* Adjust for timezone offset to get true epoch time */
-    *out_epoch = utc_epoch - total_offset_seconds;
-
-    return ESP_OK;
 }
 
 #define DEFAULT_TICKS   (2000 / portTICK_PERIOD_MS) /* 2 seconds in ticks */

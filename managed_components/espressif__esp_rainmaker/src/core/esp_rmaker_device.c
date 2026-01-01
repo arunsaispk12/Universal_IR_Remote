@@ -55,41 +55,9 @@ esp_err_t esp_rmaker_device_delete(const esp_rmaker_device_t *device)
         if (_device->type) {
             free(_device->type);
         }
-        free(_device);
         return ESP_OK;
     }
     return ESP_ERR_INVALID_ARG;
-}
-
-static esp_err_t esp_rmaker_default_bulk_write_cb(const esp_rmaker_device_t *device, const esp_rmaker_param_write_req_t write_req[],
-        uint8_t count, void *priv_data, esp_rmaker_write_ctx_t *ctx)
-{
-    _esp_rmaker_device_t *_device = (_esp_rmaker_device_t *)device;
-    _esp_rmaker_param_t *param;
-    if (_device) {
-        for (int i = 0; i < count; i++) {
-            param = (_esp_rmaker_param_t *)(write_req[i].param);
-            if (param->type && (strcmp(param->type, ESP_RMAKER_PARAM_NAME) == 0)) {
-#ifndef CONFIG_RMAKER_NAME_PARAM_CB
-                esp_rmaker_param_update(write_req[i].param, write_req[i].val);
-                continue;
-#else
-                if (!_device->write_cb) {
-                    esp_rmaker_param_update(write_req[i].param, write_req[i].val);
-                    continue;
-                }
-#endif
-            }
-            if (_device->write_cb) {
-                if (_device->write_cb(device, write_req[i].param, write_req[i].val, priv_data, ctx) != ESP_OK) {
-                    ESP_LOGE(TAG, "Remote update to param %s - %s failed", _device->name, ((_esp_rmaker_param_t *)(write_req[i].param))->name);
-                }
-            } else {
-                ESP_LOGW(TAG, "No write callback for device %s", _device->name);
-            }
-        }
-    }
-    return ESP_OK;
 }
 
 static esp_rmaker_device_t *__esp_rmaker_device_create(const char *name, const char *type, void *priv, bool is_service)
@@ -117,8 +85,6 @@ static esp_rmaker_device_t *__esp_rmaker_device_create(const char *name, const c
     }
     _device->priv_data = priv;
     _device->is_service = is_service;
-    /* Adding a default bulk write callback for backward compatibility with application code using single param write callback */
-    _device->bulk_write_cb = esp_rmaker_default_bulk_write_cb;
 
     return (esp_rmaker_device_t *)_device;
 
@@ -163,7 +129,6 @@ esp_err_t esp_rmaker_device_add_param(const esp_rmaker_device_t *device, const e
     } else {
         _device->params = _new_param;
     }
-    _device->param_count++;
     /* We check the stored value here, and not during param creation, because a parameter
      * in itself isn't unique. However, it is unique within a given device and hence can
      * be uniquely represented in storage only when added to a device.
@@ -182,7 +147,7 @@ esp_err_t esp_rmaker_device_add_param(const esp_rmaker_device_t *device, const e
             /* The device callback should be invoked once with the stored value, so
              * that applications can do initialisations as required.
              */
-            if (_device->bulk_write_cb) {
+            if (_device->write_cb) {
                 /* However, the callback should be invoked, only if the parameter is not
                  * of type ESP_RMAKER_PARAM_NAME, as it has special handling internally.
                  */
@@ -190,11 +155,7 @@ esp_err_t esp_rmaker_device_add_param(const esp_rmaker_device_t *device, const e
                     esp_rmaker_write_ctx_t ctx = {
                         .src = ESP_RMAKER_REQ_SRC_INIT,
                     };
-                    esp_rmaker_param_write_req_t write_req = {
-                        .param = (esp_rmaker_param_t *)param,
-                        .val = stored_val,
-                    };
-                    _device->bulk_write_cb(device, &write_req, 1, _device->priv_data, &ctx);
+                    _device->write_cb(device, param, stored_val, _device->priv_data, &ctx);
                 }
             }
         } else {
@@ -306,19 +267,6 @@ esp_err_t esp_rmaker_device_add_cb(const esp_rmaker_device_t *device, esp_rmaker
     return ESP_OK;
 }
 
-esp_err_t esp_rmaker_device_add_bulk_cb(const esp_rmaker_device_t *device, esp_rmaker_device_bulk_write_cb_t write_cb,
-            esp_rmaker_device_bulk_read_cb_t read_cb)
-{
-    if (!device) {
-        ESP_LOGE(TAG, "Device handle cannot be NULL");
-        return ESP_ERR_INVALID_ARG;
-    }
-    _esp_rmaker_device_t *_device = (_esp_rmaker_device_t *)device;
-    _device->bulk_write_cb = write_cb;
-    _device->bulk_read_cb = read_cb;
-    return ESP_OK;
-}
-
 char *esp_rmaker_device_get_name(const esp_rmaker_device_t *device)
 {
     if (!device) {
@@ -326,15 +274,6 @@ char *esp_rmaker_device_get_name(const esp_rmaker_device_t *device)
         return NULL;
     }
     return ((_esp_rmaker_device_t *)device)->name;
-}
-
-void *esp_rmaker_device_get_priv_data(const esp_rmaker_device_t *device)
-{
-    if (!device) {
-        ESP_LOGE(TAG, "Device handle cannot be NULL.");
-        return NULL;
-    }
-    return ((_esp_rmaker_device_t *)device)->priv_data;
 }
 
 char *esp_rmaker_device_get_type(const esp_rmaker_device_t *device)

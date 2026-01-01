@@ -216,12 +216,11 @@ static esp_err_t esp_rmaker_scenes_parse_info_and_flags(jparse_ctx_t *jctx, char
             *info = NULL;
         }
 
-        int len = strlen(_info);
-        if (len > 0) {
+        if (strlen(_info) > 0) {
             /* +1 for NULL termination */
-            *info = (char *)MEM_CALLOC_EXTRAM(1, len + 1);
+            *info = (char *)MEM_CALLOC_EXTRAM(1, strlen(_info) + 1);
             if (*info) {
-                memcpy(*info, _info, len + 1);
+                strncpy(*info, _info, strlen(_info));
             }
         }
     }
@@ -453,7 +452,7 @@ static esp_err_t __esp_rmaker_scenes_get_params(char *buf, size_t *buf_size)
     }
 
     if (json_gen_end_array(&jstr) < 0) {
-        ESP_LOGE(TAG, "Buffer size %lu not sufficient for reporting Scenes Params.", (unsigned long) *buf_size);
+        ESP_LOGE(TAG, "Buffer size %d not sufficient for reporting Scenes Params.", *buf_size);
         err = ESP_ERR_NO_MEM;
     }
     *buf_size = json_gen_str_end(&jstr);
@@ -470,7 +469,7 @@ static char *esp_rmaker_scenes_get_params(void)
     }
     char *data = MEM_CALLOC_EXTRAM(1, req_size);
     if (!data) {
-        ESP_LOGE(TAG, "Failed to allocate %lu bytes for scenes.", (unsigned long) req_size);
+        ESP_LOGE(TAG, "Failed to allocate %d bytes for scenes.", req_size);
         return NULL;
     }
     err = __esp_rmaker_scenes_get_params(data, &req_size);
@@ -504,7 +503,7 @@ static esp_err_t write_cb(const esp_rmaker_device_t *device, const esp_rmaker_pa
         return ESP_ERR_INVALID_ARG;
     }
     if (strlen(val.val.s) <= 0) {
-        ESP_LOGI(TAG, "Invalid length for params: %lu", (unsigned long) strlen(val.val.s));
+        ESP_LOGI(TAG, "Invalid length for params: %d", strlen(val.val.s));
         return ESP_ERR_INVALID_ARG;
     }
     bool report_params = false;

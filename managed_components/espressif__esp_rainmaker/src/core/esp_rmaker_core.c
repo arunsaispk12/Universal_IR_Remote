@@ -20,7 +20,6 @@
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
-#include <esp_bit_defs.h>
 
 #include <esp_rmaker_factory.h>
 #include <esp_rmaker_work_queue.h>
@@ -34,24 +33,8 @@
 #include "esp_rmaker_mqtt.h"
 #include "esp_rmaker_claim.h"
 #include "esp_rmaker_client_data.h"
-#ifdef CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE
-#include <esp_rmaker_chal_resp.h>
-#endif /* CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE */
 
-#ifdef CONFIG_OPENTHREAD_ENABLED
-#include <esp_openthread.h>
-#include <esp_openthread_lock.h>
-#include <esp_openthread_dns64.h>
-#endif
-
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
 static const int WIFI_CONNECTED_EVENT = BIT0;
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD)
-static const int THREAD_SET_DNS_SEVER_EVENT = BIT0;
-#endif
-
-#include "esp_mac.h"
-
 static const int MQTT_CONNECTED_EVENT = BIT1;
 static EventGroupHandle_t rmaker_core_event_group;
 
@@ -84,18 +67,15 @@ typedef struct {
     esp_rmaker_mqtt_conn_params_t *mqtt_conn_params;
 #ifdef ESP_RMAKER_CLAIM_ENABLED
     bool need_claim;
-    bool claim_done;
     esp_rmaker_claim_data_t *claim_data;
 #endif /* ESP_RMAKER_CLAIM_ENABLED */
-    /* Use Thread partition ID as the Thread network identifier. */
-    char *network_id;
 } esp_rmaker_priv_data_t;
 
 static esp_rmaker_priv_data_t *esp_rmaker_priv_data;
 
 bool esp_rmaker_is_mqtt_connected()
 {
-    if (esp_rmaker_priv_data) {
+    if (esp_rmaker_priv_data) {        
         return esp_rmaker_priv_data->mqtt_connected;
     }
     return false;
@@ -109,46 +89,6 @@ esp_rmaker_state_t esp_rmaker_get_state(void)
     return ESP_RMAKER_STATE_DEINIT;
 }
 
-esp_err_t esp_rmaker_set_network_id(const char *network_id)
-{
-    if (!esp_rmaker_priv_data) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!network_id) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    bool need_report_node_details = false;
-    if ((!esp_rmaker_priv_data->network_id) || (strcmp(esp_rmaker_priv_data->network_id, network_id) != 0)) {
-        need_report_node_details = true;
-    }
-    if (esp_rmaker_priv_data->network_id) {
-        free(esp_rmaker_priv_data->network_id);
-        esp_rmaker_priv_data->network_id = NULL;
-    }
-    esp_rmaker_priv_data->network_id = strdup(network_id);
-    if (!esp_rmaker_priv_data->network_id) {
-        ESP_LOGE(TAG, "Failed to allocate buffer for new network_id.");
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = esp_rmaker_node_edit_attribute(esp_rmaker_get_node(), "network-id", network_id);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add or edit network-id attribute.");
-        return err;
-    }
-    if (need_report_node_details) {
-        esp_rmaker_report_node_details();
-    }
-    return ESP_OK;
-}
-
-char *esp_rmaker_get_network_id(void)
-{
-    if (esp_rmaker_priv_data) {
-        return esp_rmaker_priv_data->network_id;
-    }
-    return NULL;
-}
-
 static void reset_event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
@@ -157,35 +97,12 @@ static void reset_event_handler(void* arg, esp_event_base_t event_base,
                 esp_rmaker_mqtt_disconnect();
                 break;
             case RMAKER_EVENT_FACTORY_RESET:
-#ifdef CONFIG_ESP_RMAKER_FACTORY_RESET_REPORTING
                 esp_rmaker_reset_user_node_mapping();
-#endif
                 break;
             default:
                 break;
         }
 }
-
-#ifdef ESP_RMAKER_CLAIM_ENABLED
-static void claim_event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data)
-{
-    if (!esp_rmaker_priv_data) {
-        return;
-    }
-    if (event_id == RMAKER_EVENT_CLAIM_SUCCESSFUL) {
-        esp_rmaker_priv_data->need_claim = false;
-        esp_rmaker_priv_data->claim_done = true;
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_STARTED, &claim_event_handler);
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_SUCCESSFUL, &claim_event_handler);
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_FAILED, &claim_event_handler);
-    } else if (event_id == RMAKER_EVENT_CLAIM_FAILED) {
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_STARTED, &claim_event_handler);
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_SUCCESSFUL, &claim_event_handler);
-        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CLAIM_FAILED, &claim_event_handler);
-    }
-}
-#endif /* ESP_RMAKER_CLAIM_ENABLED */
 
 static void esp_rmaker_mqtt_event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
@@ -206,33 +123,33 @@ static void esp_rmaker_mqtt_event_handler(void* arg, esp_event_base_t event_base
 #include "mbedtls/oid.h"
 
 static char* esp_rmaker_populate_node_id_from_cert()
-{
+{ 
     void *addr = NULL;
     size_t len = 0;
     addr = esp_rmaker_get_client_cert();
     if (addr) {
         len = esp_rmaker_get_client_cert_len();
-    } else {
-        ESP_LOGE(TAG, "Failed to get device certificate.");
-        return NULL;
+    } else { 
+        ESP_LOGE(TAG, "Failed to get device certificate."); 
+        return NULL; 
     }
     mbedtls_x509_crt crt;
     mbedtls_x509_crt_init(&crt);
     char *node_id = NULL;
-    int ret = mbedtls_x509_crt_parse(&crt, addr, len);
+    int ret = mbedtls_x509_crt_parse(&crt, addr, len); 
     if (ret != 0) {
-        ESP_LOGE(TAG, "Parsing of device certificate failed, returned %02X", ret);
+        ESP_LOGE(TAG, "Parsing of device certificate failed, returned %02X", ret); 
     } else {
         mbedtls_asn1_named_data *cn_data;
-        cn_data = mbedtls_asn1_find_named_data(&crt.subject, MBEDTLS_OID_AT_CN,
+        cn_data = mbedtls_asn1_find_named_data(&crt.subject, MBEDTLS_OID_AT_CN, 
                                                 MBEDTLS_OID_SIZE(MBEDTLS_OID_AT_CN));
         if (cn_data) {
             node_id = MEM_CALLOC_EXTRAM(1, cn_data->val.len + 1);
             memcpy(node_id, (const char *)cn_data->val.p, cn_data->val.len);
         }
     }
-    mbedtls_x509_crt_free(&crt);
-    return node_id;
+    mbedtls_x509_crt_free(&crt); 
+    return node_id; 
 }
 #endif
 
@@ -246,19 +163,15 @@ static char *esp_rmaker_populate_node_id(bool use_claiming)
 
 #ifdef ESP_RMAKER_CLAIM_ENABLED
     if (!node_id && use_claiming) {
-        uint8_t mac_addr[6];
-        /* ESP_MAC_BASE provides the base MAC address for all chips, supporting both
-         * Wi-Fi and Thread devices
-         */
-        esp_err_t err = esp_read_mac(mac_addr, ESP_MAC_BASE);
-
+        uint8_t eth_mac[6];
+        esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Could not fetch MAC address.");
+            ESP_LOGE(TAG, "Could not fetch MAC address. Please initialise Wi-Fi first");
             return NULL;
         }
         node_id = MEM_CALLOC_EXTRAM(1, ESP_CLAIM_NODE_ID_SIZE + 1); /* +1 for NULL terminatation */
         snprintf(node_id, ESP_CLAIM_NODE_ID_SIZE + 1, "%02X%02X%02X%02X%02X%02X",
-                mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+                eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
     }
 #endif /* ESP_RMAKER_CLAIM_ENABLED */
     return node_id;
@@ -269,7 +182,7 @@ esp_err_t esp_rmaker_change_node_id(char *node_id, size_t len)
     if(esp_rmaker_priv_data) {
         char *new_node_id = strndup(node_id, len);
         if (!new_node_id) {
-            ESP_LOGE(TAG, "Failed to allocate %lu bytes for new node_id.", (unsigned long) len);
+            ESP_LOGE(TAG, "Failed to allocate %d bytes for new node_id.", len);
             return ESP_ERR_NO_MEM;
         }
         if (esp_rmaker_priv_data->node_id) {
@@ -284,16 +197,11 @@ esp_err_t esp_rmaker_change_node_id(char *node_id, size_t len)
     return ESP_ERR_INVALID_STATE;
 }
 
-static void esp_rmaker_params_mqtt_init_cb(void *data)
-{
-    esp_rmaker_params_mqtt_init();
-}
 
 /* Event handler for catching system events */
 static void esp_rmaker_event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
 #ifdef CONFIG_ESP_RMAKER_ASSISTED_CLAIM
         if (esp_rmaker_priv_data->claim_data) {
@@ -305,38 +213,11 @@ static void esp_rmaker_event_handler(void* arg, esp_event_base_t event_base,
             /* Signal rmaker thread to continue execution */
             xEventGroupSetBits(rmaker_core_event_group, WIFI_CONNECTED_EVENT);
         }
-    } else
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD) /* CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI */
-    if (event_base == OPENTHREAD_EVENT && event_id == OPENTHREAD_EVENT_SET_DNS_SERVER) {
-#ifdef CONFIG_ESP_RMAKER_ASSISTED_CLAIM
-        if (esp_rmaker_priv_data->claim_data) {
-            ESP_LOGE(TAG, "Node connected to Thread network without Assisted claiming. Cannot proceed to MQTT connection.");
-            ESP_LOGE(TAG, "Please update your phone apps and repeat Wi-Fi provisioning with BLE transport.");
-        }
-#endif
-        if (rmaker_core_event_group) {
-            /* Signal rmaker thread to continue execution */
-            xEventGroupSetBits(rmaker_core_event_group, THREAD_SET_DNS_SEVER_EVENT);
-        }
-    } else if (event_base == OPENTHREAD_EVENT && event_id == OPENTHREAD_EVENT_ATTACHED) {
-        otInstance *instance = esp_openthread_get_instance();
-        if (instance) {
-            esp_openthread_lock_acquire(portMAX_DELAY);
-            uint32_t partition_id = otThreadGetPartitionId(instance);
-            esp_openthread_lock_release();
-            if (partition_id != 0) {
-                char network_id_buf[9] = {0};
-                sprintf(network_id_buf, "%08lX", partition_id);
-                esp_rmaker_set_network_id(network_id_buf);
-            }
-        }
-    } else
-#endif /* CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD */
-     if (event_base == RMAKER_EVENT &&
+    } else if (event_base == RMAKER_EVENT &&
             (event_id == RMAKER_EVENT_USER_NODE_MAPPING_DONE ||
             event_id == RMAKER_EVENT_USER_NODE_MAPPING_RESET)) {
         esp_event_handler_unregister(RMAKER_EVENT, event_id, &esp_rmaker_event_handler);
-        esp_rmaker_work_queue_add_task(esp_rmaker_params_mqtt_init_cb, NULL);
+        esp_rmaker_params_mqtt_init();
     } else if (event_base == RMAKER_COMMON_EVENT && event_id == RMAKER_MQTT_EVENT_CONNECTED) {
         if (rmaker_core_event_group) {
             /* Signal rmaker thread to continue execution */
@@ -351,7 +232,7 @@ static esp_err_t esp_rmaker_deinit_priv_data(esp_rmaker_priv_data_t *rmaker_priv
         return ESP_ERR_INVALID_ARG;
     }
     esp_rmaker_work_queue_deinit();
-#if !defined(CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV) && !defined(CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE)
+#ifndef CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV
     esp_rmaker_user_mapping_prov_deinit();
 #endif
 #ifdef ESP_RMAKER_CLAIM_ENABLED
@@ -427,11 +308,7 @@ static void esp_rmaker_task(void *data)
     ESP_RMAKER_CHECK_HANDLE();
     esp_rmaker_priv_data->state = ESP_RMAKER_STATE_STARTING;
     esp_err_t err = ESP_FAIL;
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
     wifi_ap_record_t ap_info;
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD)
-    ip6_addr_t nat64_prefix;
-#endif
     esp_rmaker_priv_data->mqtt_connected = false;
     esp_event_handler_register(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_CONNECTED, &esp_rmaker_mqtt_event_handler, NULL);
     esp_event_handler_register(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_DISCONNECTED, &esp_rmaker_mqtt_event_handler, NULL);
@@ -440,24 +317,11 @@ static void esp_rmaker_task(void *data)
         ESP_LOGE(TAG, "Failed to create event group. Aborting");
         goto rmaker_end;
     }
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
     err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &esp_rmaker_event_handler, esp_rmaker_priv_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register event handler. Error: %d. Aborting", err);
         goto rmaker_end;
     }
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD)
-    err = esp_event_handler_register(OPENTHREAD_EVENT, OPENTHREAD_EVENT_SET_DNS_SERVER, &esp_rmaker_event_handler, esp_rmaker_priv_data);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register event handler. Error: %d. Aborting", err);
-        goto rmaker_end;
-    }
-    err = esp_event_handler_register(OPENTHREAD_EVENT, OPENTHREAD_EVENT_ATTACHED, &esp_rmaker_event_handler, esp_rmaker_priv_data);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register event handler. Error: %d. Aborting", err);
-        goto rmaker_end;
-    }
-#endif
     err = esp_event_handler_register(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_CONNECTED, &esp_rmaker_event_handler, esp_rmaker_priv_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register event handler. Error: %d. Aborting", err);
@@ -466,54 +330,31 @@ static void esp_rmaker_task(void *data)
     /* Assisted claiming needs to be done before Wi-Fi connection */
 #ifdef CONFIG_ESP_RMAKER_ASSISTED_CLAIM
     if (esp_rmaker_priv_data->need_claim) {
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
             ESP_LOGE(TAG, "Node connected to Wi-Fi without Assisted claiming. Cannot proceed to MQTT connection.");
             ESP_LOGE(TAG, "Please update your phone apps and repeat Wi-Fi provisioning with BLE transport.");
             esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &esp_rmaker_event_handler);
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD)
-        if (esp_openthread_get_nat64_prefix(&nat64_prefix) == ESP_OK) {
-            ESP_LOGE(TAG, "Node connected to Thread without Assisted claiming. Cannot proceed to MQTT connection.");
-            ESP_LOGE(TAG, "Please update your phone apps and repeat Thread provisioning with BLE transport.");
-            esp_event_handler_unregister(OPENTHREAD_EVENT, OPENTHREAD_EVENT_SET_DNS_SERVER, &esp_rmaker_event_handler);
-            esp_event_handler_unregister(OPENTHREAD_EVENT, OPENTHREAD_EVENT_ATTACHED, &esp_rmaker_event_handler);
-#endif
             err = ESP_FAIL;
             goto rmaker_end;
         }
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
         err = esp_rmaker_assisted_claim_perform(esp_rmaker_priv_data->claim_data);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_rmaker_assisted_claim_perform() returned %d. Aborting", err);
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
+            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
+            ESP_LOGE(TAG, "esp_rmaker_self_claim_perform() returned %d. Aborting", err);
             esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &esp_rmaker_event_handler);
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD)
-            esp_event_handler_unregister(OPENTHREAD_EVENT, OPENTHREAD_EVENT_SET_DNS_SERVER, &esp_rmaker_event_handler);
-            esp_event_handler_unregister(OPENTHREAD_EVENT, OPENTHREAD_EVENT_ATTACHED, &esp_rmaker_event_handler);
-#endif
             goto rmaker_end;
         }
         esp_rmaker_priv_data->claim_data = NULL;
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
     }
-#endif /* CONFIG_ESP_RMAKER_ASSISTED_CLAIM */
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
+#endif
     /* Check if already connected to Wi-Fi */
     if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
         /* Wait for Wi-Fi connection */
         xEventGroupWaitBits(rmaker_core_event_group, WIFI_CONNECTED_EVENT, false, true, portMAX_DELAY);
     }
     esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &esp_rmaker_event_handler);
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD) /* CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI */
-    esp_openthread_lock_acquire(portMAX_DELAY);
-    err = esp_openthread_get_nat64_prefix(&nat64_prefix);
-    esp_openthread_lock_release();
-    /* Check if already get nat64 prefix */
-    if (err != ESP_OK) {
-        /* Wait for Thread connection */
-        xEventGroupWaitBits(rmaker_core_event_group, THREAD_SET_DNS_SEVER_EVENT, false, true, portMAX_DELAY);
-        err = ESP_OK;
-    }
-    esp_event_handler_unregister(OPENTHREAD_EVENT, OPENTHREAD_EVENT_SET_DNS_SERVER, &esp_rmaker_event_handler);
-#endif /* CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD */
 
     if (esp_rmaker_priv_data->enable_time_sync) {
 #ifdef CONFIG_MBEDTLS_HAVE_TIME_DATE
@@ -523,17 +364,19 @@ static void esp_rmaker_task(void *data)
     /* Self claiming can be done only after Wi-Fi connection */
 #ifdef CONFIG_ESP_RMAKER_SELF_CLAIM
     if (esp_rmaker_priv_data->need_claim) {
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
         err = esp_rmaker_self_claim_perform(esp_rmaker_priv_data->claim_data);
         if (err != ESP_OK) {
+            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
             ESP_LOGE(TAG, "esp_rmaker_self_claim_perform() returned %d. Aborting", err);
             goto rmaker_end;
         }
         esp_rmaker_priv_data->claim_data = NULL;
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
     }
 #endif
 #ifdef ESP_RMAKER_CLAIM_ENABLED
-    /* Initialize MQTT if claiming was needed (either still in progress or just completed) */
-    if (esp_rmaker_priv_data->need_claim || esp_rmaker_priv_data->claim_done) {
+    if (esp_rmaker_priv_data->need_claim) {
         esp_rmaker_priv_data->mqtt_conn_params = esp_rmaker_get_mqtt_conn_params();
         if (!esp_rmaker_priv_data->mqtt_conn_params) {
             ESP_LOGE(TAG, "Failed to initialise MQTT Config after claiming. Aborting");
@@ -546,7 +389,6 @@ static void esp_rmaker_task(void *data)
             goto rmaker_end;
         }
         esp_rmaker_priv_data->need_claim = false;
-        esp_rmaker_priv_data->claim_done = false;
     }
 #endif /* ESP_RMAKER_CLAIM_ENABLED */
 #ifdef CONFIG_ESP_RMAKER_CMD_RESP_ENABLE
@@ -556,15 +398,6 @@ static void esp_rmaker_task(void *data)
             goto rmaker_end;
         }
         esp_rmaker_node_add_attribute(esp_rmaker_get_node(), "cmd-resp", "1");
-
-#ifdef CONFIG_ESP_RMAKER_PARAM_CMD_RESP_ENABLE
-        err = esp_rmaker_param_cmd_resp_enable();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to enable parameter command-response. Aborting!!!");
-            goto rmaker_end;
-        }
-#endif /* CONFIG_ESP_RMAKER_PARAM_CMD_RESP_ENABLE */
-
 #else
     ESP_LOGW(TAG, "Command-Response Module not enabled. Set CONFIG_ESP_RMAKER_CMD_RESP_ENABLE=y to use it.");
 #endif /* !CONFIG_ESP_RMAKER_CMD_RESP_ENABLE */
@@ -604,16 +437,10 @@ static void esp_rmaker_task(void *data)
          * status.
          */
         if (esp_rmaker_user_node_mapping_get_state() != ESP_RMAKER_USER_MAPPING_STARTED) {
-#ifdef CONFIG_ESP_RMAKER_FACTORY_RESET_REPORTING
             esp_rmaker_reset_user_node_mapping();
             /* Wait for user reset to finish. */
             err = esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_USER_NODE_MAPPING_RESET,
                     &esp_rmaker_event_handler, NULL);
-#else
-            /* If factory reset reporting is disabled, just wait for user node mapping */
-            err = esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_USER_NODE_MAPPING_DONE,
-                    &esp_rmaker_event_handler, NULL);
-#endif
         } else {
             /* Wait for User Node mapping to finish. */
             err = esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_USER_NODE_MAPPING_DONE,
@@ -661,7 +488,6 @@ static esp_err_t esp_rmaker_mqtt_conn_params_init(esp_rmaker_priv_data_t *rmaker
             return ESP_FAIL;
         } else {
             rmaker_priv_data->need_claim = true;
-            rmaker_priv_data->claim_done = false;
             return ESP_OK;
         }
     }
@@ -703,14 +529,14 @@ static esp_err_t esp_rmaker_init(const esp_rmaker_config_t *config, bool use_cla
         ESP_LOGE(TAG, "ESP RainMaker Queue Creation Failed");
         return ESP_ERR_NO_MEM;
     }
-#if !defined(CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV) && !defined(CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE)
+#ifndef CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV
     if (esp_rmaker_user_mapping_prov_init()) {
         esp_rmaker_deinit_priv_data(esp_rmaker_priv_data);
         esp_rmaker_priv_data = NULL;
         ESP_LOGE(TAG, "Could not initialise User-Node mapping.");
         return ESP_FAIL;
     }
-#endif /* !CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV && !CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE */
+#endif /* !CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV */
     if (esp_rmaker_mqtt_conn_params_init(esp_rmaker_priv_data, use_claiming) != ESP_OK) {
         esp_rmaker_deinit_priv_data(esp_rmaker_priv_data);
         esp_rmaker_priv_data = NULL;
@@ -733,36 +559,7 @@ static esp_err_t esp_rmaker_init(const esp_rmaker_config_t *config, bool use_cla
 #ifdef CONFIG_ESP_RMAKER_LOCAL_CTRL_ENABLE
     esp_rmaker_init_local_ctrl_service();
 #endif
-
-#ifdef CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE
-    /* Check if claiming is needed - challenge response is incompatible with self claiming only */
-#ifdef CONFIG_ESP_RMAKER_SELF_CLAIM
-    if (esp_rmaker_priv_data->need_claim) {
-        esp_rmaker_deinit_priv_data(esp_rmaker_priv_data);
-        esp_rmaker_priv_data = NULL;
-        ESP_LOGE(TAG, "Challenge Response is incompatible with self claiming. Please disable self claiming or disable challenge response.");
-        ESP_LOGE(TAG, "Self claiming is needed because device certificates are not found or device is not claimed yet.");
-        return ESP_FAIL;
-    }
-#endif /* CONFIG_ESP_RMAKER_SELF_CLAIM */
-
-    /* Initialize challenge response */
-    if (esp_rmaker_chal_resp_init() != ESP_OK) {
-        esp_rmaker_deinit_priv_data(esp_rmaker_priv_data);
-        esp_rmaker_priv_data = NULL;
-        ESP_LOGE(TAG, "Failed to initialize Challenge Response");
-        return ESP_FAIL;
-    }
-#endif /* CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE */
-
     esp_rmaker_priv_data->enable_time_sync = config->enable_time_sync;
-#ifdef ESP_RMAKER_CLAIM_ENABLED
-    if (esp_rmaker_priv_data->need_claim) {
-        esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_CLAIM_STARTED, &claim_event_handler, NULL);
-        esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_CLAIM_SUCCESSFUL, &claim_event_handler, NULL);
-        esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_CLAIM_FAILED, &claim_event_handler, NULL);
-    }
-#endif /* ESP_RMAKER_CLAIM_ENABLED */
     esp_rmaker_post_event(RMAKER_EVENT_INIT_DONE, NULL, 0);
     esp_rmaker_priv_data->state = ESP_RMAKER_STATE_INIT_DONE;
 
@@ -832,10 +629,6 @@ esp_err_t esp_rmaker_start(void)
 esp_err_t esp_rmaker_stop()
 {
     ESP_RMAKER_CHECK_HANDLE(ESP_ERR_INVALID_STATE);
-#ifdef CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE
-    /* Deinitialize challenge response */
-    esp_rmaker_chal_resp_deinit();
-#endif /* CONFIG_ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE */
     esp_rmaker_priv_data->state = ESP_RMAKER_STATE_STOP_REQUESTED;
     return ESP_OK;
 }

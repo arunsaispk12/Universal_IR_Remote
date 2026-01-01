@@ -29,7 +29,6 @@ extern "C"
 #define ESP_RMAKER_UI_PUSHBUTTON        "esp.ui.push-btn-big"
 #define ESP_RMAKER_UI_TRIGGER           "esp.ui.trigger"
 #define ESP_RMAKER_UI_HIDDEN            "esp.ui.hidden"
-#define ESP_RMAKER_UI_QR_SCAN           "esp.ui.qr-scan"
 
 /********** STANDARD PARAM TYPES **********/
 
@@ -62,10 +61,7 @@ extern "C"
 #define ESP_RMAKER_PARAM_GARAGE_POSITION     "esp.param.garage-position"
 #define ESP_RMAKER_PARAM_LIGHT_MODE     "esp.param.light-mode"
 #define ESP_RMAKER_PARAM_AC_MODE        "esp.param.ac-mode"
-#define ESP_RMAKER_PARAM_ADD_ZIGBEE_DEVICE     "esp.param.add_zigbee_device"
-#define ESP_RMAKER_PARAM_USER_TOKEN     "esp.param.user-token"
-#define ESP_RMAKER_PARAM_BASE_URL       "esp.param.base-url"
-#define ESP_RMAKER_PARAM_GROUP_ID       "esp.param.group-id"
+
 
 /********** STANDARD DEVICE TYPES **********/
 
@@ -88,8 +84,6 @@ extern "C"
 #define ESP_RMAKER_DEVICE_TV            "esp.device.tv"
 #define ESP_RMAKER_DEVICE_WASHER        "esp.device.washer"
 #define ESP_RMAKER_DEVICE_OTHER         "esp.device.other"
-#define ESP_RMAKER_DEVICE_ZIGBEE_GATEWAY   "esp.device.zigbee_gateway"
-#define ESP_RMAKER_DEVICE_THREAD_BR        "esp.device.thread-br"
 
 /********** STANDARD SERVICE TYPES **********/
 #define ESP_RMAKER_SERVICE_OTA          "esp.service.ota"
@@ -98,8 +92,6 @@ extern "C"
 #define ESP_RMAKER_SERVICE_SCENES       "esp.service.scenes"
 #define ESP_RMAKER_SERVICE_SYSTEM       "esp.service.system"
 #define ESP_RMAKER_SERVICE_LOCAL_CONTROL    "esp.service.local_control"
-#define ESP_RMAKER_SERVICE_USER_AUTH        "esp.service.rmaker-user-auth"
-#define ESP_RMAKER_SERVICE_GROUPS       "esp.service.groups"
 
 #ifdef __cplusplus
 }

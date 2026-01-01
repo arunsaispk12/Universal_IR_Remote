@@ -66,6 +66,9 @@ static esp_rmaker_device_t *speaker_device = NULL;
 static esp_rmaker_device_t *fan_device = NULL;
 static esp_rmaker_device_t *custom_device = NULL;
 
+static esp_rmaker_node_t *rainmaker_node = NULL;
+static bool devices_created = false;
+
 /* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
 static uint32_t button_press_start = 0;
@@ -663,7 +666,8 @@ static esp_err_t create_fan_device(esp_rmaker_node_t *node)
     }
 
     esp_rmaker_device_add_cb(fan_device, fan_write_cb, NULL);
-    esp_rmaker_device_add_param(fan_device, esp_rmaker_name_param_create("Name", "Fan"));
+
+    /* Note: Name parameter is automatically added by esp_rmaker_fan_device_create() */
 
     /* Fan speed */
     esp_rmaker_param_t *speed = esp_rmaker_speed_param_create("Speed", 3);
@@ -742,6 +746,39 @@ static esp_err_t create_custom_device(esp_rmaker_node_t *node)
     esp_rmaker_node_add_device(node, custom_device);
     ESP_LOGI(TAG, "Custom device created");
     return ESP_OK;
+}
+
+/* ============================================================================
+ * IP EVENT HANDLER - Create devices after getting IP
+ * ============================================================================ */
+
+static void ip_event_handler(void *arg, esp_event_base_t event_base,
+                              int32_t event_id, void *event_data)
+{
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
+
+        /* Create RainMaker devices NOW (after IP acquired) */
+        if (!devices_created && rainmaker_node != NULL) {
+            ESP_LOGI(TAG, "Creating RainMaker devices (post-IP)...");
+
+            /* Enable time-dependent services AFTER IP (before device creation) */
+            esp_rmaker_schedule_enable();
+            esp_rmaker_timezone_service_enable();
+
+            ESP_ERROR_CHECK(create_tv_device(rainmaker_node));
+            ESP_ERROR_CHECK(create_ac_device(rainmaker_node));
+            ESP_ERROR_CHECK(create_stb_device(rainmaker_node));
+            ESP_ERROR_CHECK(create_speaker_device(rainmaker_node));
+            ESP_ERROR_CHECK(create_fan_device(rainmaker_node));
+            ESP_ERROR_CHECK(create_custom_device(rainmaker_node));
+
+            devices_created = true;
+
+            ESP_LOGI(TAG, "All RainMaker devices created successfully");
+        }
+    }
 }
 
 /* ============================================================================
@@ -867,49 +904,48 @@ void app_main(void)
     /* Initialize boot button */
     init_boot_button();
 
-    /* Initialize RainMaker */
-    ESP_LOGI(TAG, "Initializing ESP RainMaker...");
+    /* Initialize WiFi (before RainMaker) */
+    app_wifi_init();
+
+    /* Register IP event handler BEFORE WiFi start */
+    ESP_LOGI(TAG, "Registering IP event handler...");
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                &ip_event_handler, NULL));
+
+    /* Initialize RainMaker node (but DON'T create devices yet) */
+    ESP_LOGI(TAG, "Initializing ESP RainMaker node...");
     esp_rmaker_config_t rainmaker_cfg = {
-        .enable_time_sync = false,
+        .enable_time_sync = false,  // Disabled - no SNTP issues
     };
-    esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
-    if (!node) {
+    rainmaker_node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
+    if (!rainmaker_node) {
         ESP_LOGE(TAG, "Failed to initialize RainMaker node");
         abort();
     }
 
-    /* Create all devices */
-    ESP_LOGI(TAG, "Creating RainMaker devices...");
-    ESP_ERROR_CHECK(create_tv_device(node));
-    ESP_ERROR_CHECK(create_ac_device(node));
-    ESP_ERROR_CHECK(create_stb_device(node));
-    ESP_ERROR_CHECK(create_speaker_device(node));
-    ESP_ERROR_CHECK(create_fan_device(node));
-    ESP_ERROR_CHECK(create_custom_device(node));
+    /* DO NOT create devices here - they will be created after IP_EVENT_STA_GOT_IP */
+    ESP_LOGI(TAG, "RainMaker node initialized (devices will be created after IP acquired)");
 
-    /* Enable OTA */
+    /* Enable OTA (safe - doesn't need time sync) */
     esp_rmaker_ota_enable_default();
 
-    /* Enable scheduling */
-    esp_rmaker_schedule_enable();
-
-    /* Enable timezone service */
-    esp_rmaker_timezone_service_enable();
+    /* NOTE: Schedule and timezone services are enabled AFTER IP acquisition in ip_event_handler() */
 
     /* Start RainMaker */
     ESP_LOGI(TAG, "Starting ESP RainMaker...");
     ESP_ERROR_CHECK(esp_rmaker_start());
 
-    /* Initialize WiFi with BLE provisioning */
-    ESP_LOGI(TAG, "Initializing WiFi...");
-    ESP_ERROR_CHECK(app_wifi_init("abcd1234")); // Default PoP
+    /* Start WiFi provisioning - this will trigger IP_EVENT_STA_GOT_IP which creates devices */
+    ESP_LOGI(TAG, "Starting WiFi provisioning...");
+    app_wifi_start(POP_TYPE_RANDOM);
 
     /* Initialize console for debugging */
     esp_rmaker_console_init();
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  Universal IR Remote Ready!");
-    ESP_LOGI(TAG, "  Devices: TV, AC, STB, Speaker, Fan, Custom");
+    ESP_LOGI(TAG, "  Waiting for IP address...");
+    ESP_LOGI(TAG, "  Devices will be created after WiFi connection");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Use RainMaker app to provision and control");
 }

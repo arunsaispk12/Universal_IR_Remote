@@ -2,8 +2,8 @@ menu "ESP RainMaker Config"
 
     choice ESP_RMAKER_CLAIM_TYPE
         bool "Claiming Type"
-        default ESP_RMAKER_ASSISTED_CLAIM if BT_ENABLED && !IDF_TARGET_ESP32S2
         default ESP_RMAKER_SELF_CLAIM
+        default ESP_RMAKER_ASSISTED_CLAIM if IDF_TARGET_ESP32
         help
             Claiming type to be used.
 
@@ -16,7 +16,7 @@ menu "ESP RainMaker Config"
 
         config ESP_RMAKER_SELF_CLAIM
             bool "Use Self Claiming"
-            depends on !IDF_TARGET_ESP32 && !IDF_TARGET_ESP32C2
+            depends on !IDF_TARGET_ESP32
             help
                 Use Self Claiming i.e. get the MQTT credentials
                 directly from the claiming service.
@@ -68,18 +68,6 @@ menu "ESP RainMaker Config"
         help
             ESP RainMaker Claiming Service Base URL.
 
-    config ESP_RMAKER_CLAIM_VIDEOSTREAM_SUPPORT
-        bool "Enable Video Stream Support for Claiming"
-        default n
-        depends on ESP_RMAKER_SELF_CLAIM || ESP_RMAKER_ASSISTED_CLAIM
-        help
-            Enable video stream support during claiming. When enabled:
-            - For Self Claiming: The device will register certificates with "videostream" node policies,
-              granting access to AWS Kinesis Video Streams (KVS) services.
-            - For Assisted Claiming: The phone app will be notified via capabilities that this device
-              requires video stream support, so it can register certificates with appropriate policies.
-            This is required for camera devices that need to use WebRTC or KVS streaming.
-
     config ESP_RMAKER_READ_MQTT_HOST_FROM_CONFIG
         bool "Read MQTT Host from ESP_RMAKER_MQTT_HOST (Read Docs)"
         default n
@@ -92,30 +80,21 @@ menu "ESP RainMaker Config"
         bool "Read Node ID from Device Certificate"
         default n
         help
-            If enabled, the device will get its node id from the device certificate's CN field. If not enabled,
+            If enabled, the device will get its node id from the device certificate's CN field. If not enabled, 
             it will read the node id either from nvs factory partition or mac address, depending on the configuration.
 
     config ESP_RMAKER_MQTT_HOST
         string "ESP RainMaker MQTT Host"
         depends on ESP_RMAKER_SELF_CLAIM || ESP_RMAKER_ASSISTED_CLAIM || ESP_RMAKER_READ_MQTT_HOST_FROM_CONFIG
-        default "mqtt.rainmaker.espressif.com"
+        default "a1p72mufdu6064-ats.iot.us-east-1.amazonaws.com"
         help
             ESP RainMaker MQTT Host name.
-
-    config ESP_RMAKER_MQTT_CRED_HOST
-        string "ESP RainMaker MQTT credentials Host"
-        depends on ESP_RMAKER_SELF_CLAIM || ESP_RMAKER_ASSISTED_CLAIM || ESP_RMAKER_READ_MQTT_HOST_FROM_CONFIG
-        default "c10yordfvrjdjb.credentials.iot.us-east-1.amazonaws.com"
-        help
-            ESP RainMaker MQTT Credential Host.
-            This endpoint can be used to get expirable AWS security token with different node_policies if available.
-            For example, With `esp-videostream-v1-NodeRole`, token is issued which grants access to videostream service.
 
     config ESP_RMAKER_MQTT_USE_BASIC_INGEST_TOPICS
         bool "Use Basic Ingest Topics"
         default y
         help
-            This config enables the use of AWS Basic Ingest Topics for Node to Cloud communication,
+            This config enables the use of AWS Basic Ingest Topics for Node to Cloud communication, 
             which eliminates the MQTT Broker and thus reduces messaging cost.
 
     config ESP_RMAKER_MQTT_ENABLE_BUDGETING
@@ -176,42 +155,14 @@ menu "ESP RainMaker Config"
 
     config ESP_RMAKER_USER_ID_CHECK
         bool "User id check for User Node mapping"
-        depends on !ESP_RMAKER_DISABLE_USER_MAPPING_PROV && !ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE
-        select ESP_RMAKER_FACTORY_RESET_REPORTING
         default n
         help
             This enables the additional user id checks during user node mapping. Whenever a new user
-            id is received during provisioning, it is checked against the existing user id in NVS.
-            If there is a mismatch, or if no user id exists in NVS, this is considered as a reset
-            state and the same is reported to the ESP RainMaker Cloud during the User Node association
-            MQTT Publish so that the cloud can take appropriate action w.r.t user permissions.
-            It is recommended to enable this option for security reasons.
-
-    config ESP_RMAKER_FACTORY_RESET_REPORTING
-        bool "Enable factory reset reporting to cloud"
-        default n
-        help
-            Enable reporting of factory reset state to cloud using dummy user ID. This allows the cloud
-            to clean up old user-node mappings when a device is factory reset or when an incorrect
-            provisioning app is used. The device will send a dummy user ID with reset flag to indicate
-            that previous user-node associations should be cleared. This feature works with both
-            traditional MQTT-based and challenge-response based user-node association mechanisms.
-
-    config ESP_RMAKER_ENABLE_CHALLENGE_RESPONSE
-        bool "Enable Challenge Response during provisioning"
-        select ESP_RMAKER_FACTORY_RESET_REPORTING
-        default y
-        help
-            Enable challenge response mechanism during provisioning to verify node authenticity.
-            The node will receive a challenge from the client during provisioning, which it will
-            sign using its private key. The signed response along with the node id will be sent
-            back to the client for verification.
-
-            Important: Traditional user-node mapping provisioning is automatically disabled when
-            this option is enabled, regardless of CONFIG_ESP_RMAKER_DISABLE_USER_MAPPING_PROV
-            setting. The challenge response mechanism replaces the traditional user mapping flow.
-
-            Note: This feature is cannot be enabled if the node is not already claimed.
+            id is received, it is checked against the existing user id in NVS. If there is a mismatch,
+            or if no user id exists in NVS, this is considered as a reset state and the same is reported
+            to the ESP RainMaker Cloud during the User Node association MQTT Publish so that the cloud
+            can take appropriate action w.r.t user permissions. It is recommended to enable this option
+            for security reasons.
 
     config RMAKER_NAME_PARAM_CB
         bool "Call device callback for Name param"
@@ -274,15 +225,6 @@ menu "ESP RainMaker Config"
         default 0 if ESP_RMAKER_LOCAL_CTRL_SECURITY_0
         default 1 if ESP_RMAKER_LOCAL_CTRL_SECURITY_1
 
-    config ESP_RMAKER_LOCAL_CTRL_LEASE_INTERVAL_SECONDS
-        int "Local Control SRP Service Lease Interval (Seconds)"
-        depends on ESP_RMAKER_LOCAL_CTRL_FEATURE_ENABLE && ESP_RMAKER_NETWORK_OVER_THREAD
-        default 180
-        help
-            This parameter defines, in seconds, how long a Thread Border Router waits before removing an SRP service
-            after the Thread End Device powers off. To minimize unnecessary packet exchanges, we set the lease interval
-            to 180 seconds (3 minutes) by default.
-
     choice ESP_RMAKER_CONSOLE_UART_NUM
         prompt "UART for console input"
         default ESP_RMAKER_CONSOLE_UART_NUM_0
@@ -299,15 +241,6 @@ menu "ESP RainMaker Config"
         int
         default 0 if ESP_RMAKER_CONSOLE_UART_NUM_0
         default 1 if ESP_RMAKER_CONSOLE_UART_NUM_1
-
-    config ESP_RMAKER_CONSOLE_PARAM_CMDS_ENABLE
-        bool "Enable parameter console commands (set-param, update-param, get-param)"
-        default n
-        help
-            Enable console commands for interacting with device parameters:
-            - set-param: Set parameter value with callback invocation
-            - update-param: Update parameter value without callback
-            - get-param: Get current parameter value
 
     config ESP_RMAKER_USE_CERT_BUNDLE
         bool "Use Certificate Bundle"
@@ -366,6 +299,15 @@ menu "ESP RainMaker Config"
             help
                 This allows you to skip the project name check.
 
+        config ESP_RMAKER_OTA_HTTP_RX_BUFFER_SIZE
+            int "OTA HTTP receive buffer size"
+            default 1024
+            range 512 LWIP_TCP_WND_DEFAULT
+            help
+                Increasing this value beyond the default would speed up the OTA download process.
+                However, please ensure that your application has enough memory headroom to allow this,
+                else, the OTA may fail.
+
         config ESP_RMAKER_OTA_ROLLBACK_WAIT_PERIOD
             int "OTA Rollback Wait Period (Seconds)"
             default 90
@@ -390,94 +332,6 @@ menu "ESP RainMaker Config"
                 OTA Jobs can include additional metadata for time to indicate a range of valid date and the time within
                 those dates. Eg. Perform OTA between 1 Dec 2022 and 10 Dec 2022 that too only between 2:00am and 5:00am.
                 If you want to ignore this, disable this option.
-
-        config ESP_RMAKER_OTA_PROGRESS_SUPPORT
-            bool "Enable OTA Progress Support"
-            default n
-            help
-                When the device do OTA, it will report upgrade progress to cloud. If the APP need show the progress bar,
-                please enable it and APP can get the progress value in additional_info by API ota_status.
-
-        config ESP_RMAKER_OTA_PROGRESS_INTERVAL
-            int "OTA Progress Interval (%)"
-            default 10
-            range 5 50
-            depends on ESP_RMAKER_OTA_PROGRESS_SUPPORT
-            help
-                If you set the reported upgrade progress interval to 10, it will report 10% of the progress every time 10%
-                of the firmware is downloaded, range from 10%, 20%, 30% until 90%. For example, when downloaded 10% firmware size,
-                the ota_status is OTA_STATUS_IN_PROGRESS and the additional_info is `Downloaded 10% Firmware Image`.
-                The additional_info `Downloading Firmware Image` is 0% progress and `Firmware Image download complete` is 100% progress.
-
-        config ESP_RMAKER_OTA_MAX_RETRIES
-            int "Maximum OTA Retry Attempts"
-            default 3
-            range 1 10
-            help
-                Maximum number of times the device will retry OTA download on failure before giving up.
-
-        config ESP_RMAKER_OTA_RETRY_DELAY_MINUTES
-            int "OTA Retry Delay (Minutes)"
-            default 5
-            range 1 60
-            help
-                Delay (in minutes) before re-fetching OTA details after all retry attempts fail (for OTA using topics).
-
-        config ESP_RMAKER_HTTP_OTA_RESUMPTION
-            bool "Enable HTTP OTA resumption"
-            default y
-            depends on ESP_RMAKER_OTA_USE_HTTPS
-            help
-                If you enable this, the OTA process will resume downloading from the last position instead of restarting the download.
-
-        choice ESP_RMAKER_OTA_TYPE
-            prompt "OTA Update Protocol Type"
-            default ESP_RMAKER_OTA_USE_HTTPS
-            help
-                Protocol to be used for OTA Update
-            config ESP_RMAKER_OTA_USE_HTTPS
-                bool "HTTPS"
-            config ESP_RMAKER_OTA_USE_MQTT
-                bool "MQTT"
-        endchoice
-
-        config ESP_RMAKER_OTA_HTTP_RX_BUFFER_SIZE
-            int "OTA HTTP receive buffer size"
-            default 1024
-            range 512 LWIP_TCP_WND_DEFAULT
-            depends on ESP_RMAKER_OTA_USE_HTTPS
-            help
-                Increasing this value beyond the default would speed up the OTA download process.
-                However, please ensure that your application has enough memory headroom to allow this,
-                else, the OTA may fail.
-
-        config ESP_RMAKER_MQTT_OTA_BLOCK_SIZE
-                int "MQTT OTA Block Length"
-                default 3072
-                depends on ESP_RMAKER_OTA_USE_MQTT
-                range 256 131072
-                help
-                    The block size to fetch in a MQTT OTA publish message.
-                    Note that number of blocks * block size should not exceed 128KB.
-
-        config ESP_RMAKER_MQTT_OTA_NO_OF_BLOCKS
-                int "MQTT OTA No. of Blocks"
-                default 42
-                depends on ESP_RMAKER_OTA_USE_MQTT
-                range 1 512
-                help
-                    The number of blocks of file to fetch in a MQTT OTA publish message.
-                    Note that number of blocks * block size should not exceed 128KB.
-
-        config ESP_RMAKER_MQTT_OTA_MAX_RETRIES
-                int "MQTT OTA Maximum Number of Retries"
-                default 3
-                depends on ESP_RMAKER_OTA_USE_MQTT
-                range 1 255
-                help
-                    The number of times we should resend request for fetching file blocks, in case we do not get any response.
-
-
     endmenu
 
     menu "ESP RainMaker Scheduling"
@@ -488,24 +342,6 @@ menu "ESP RainMaker Config"
             range 1 50
             help
                 Maximum Number of schedules allowed. The json size for report params increases as the number of schedules increases.
-
-        config ESP_RMAKER_SCHEDULE_ENABLE_DAYLIGHT
-            bool "Enable Daylight (Sunrise/Sunset) Schedules"
-            default y
-            depends on ESP_SCHEDULE_ENABLE_DAYLIGHT
-            help
-                Enable sunrise and sunset based schedules in ESP RainMaker.
-
-                This feature allows JSON API support for scheduling based on
-                astronomical calculations for sunrise and sunset times at specific
-                geographical locations.
-
-                Requires ESP_SCHEDULE_ENABLE_DAYLIGHT to be enabled.
-
-                Disabling this option will:
-                - Remove sunrise/sunset JSON API support
-                - Save memory by excluding solar schedule parsing/generation code
-                - Reduce binary size (by about 750 bytes. Disable CONFIG_ESP_SCHEDULE_ENABLE_DAYLIGHT for further saving of 11500 bytes)
 
     endmenu
 
@@ -538,25 +374,6 @@ menu "ESP RainMaker Config"
                 Enable the ESP RainMaker Command-Response module for semi-synchronous communication. Please refer the RainMaker documents
                 for additional information.
 
-        config ESP_RMAKER_PARAM_CMD_RESP_ENABLE
-            bool "Enable Parameter Command-Response"
-            default y
-            depends on ESP_RMAKER_CMD_RESP_ENABLE
-            help
-                Enable automatic registration of set params command handler (command id 1) for parameter updates
-                via command-response framework. This allows parameter updates through the command-response system
-                with proper request source tracking. The payload format is the same as regular set params operations.
-
-        config ESP_RMAKER_PARAM_CMD_RESP_BUFFER_SIZE
-            int "Parameter Command-Response Buffer Size"
-            default 2048
-            range 512 8192
-            depends on ESP_RMAKER_PARAM_CMD_RESP_ENABLE
-            help
-                Size of the static buffer used for parameter command-response operations. This buffer is used for
-                both parameter extraction and response generation. Larger buffers allow handling more parameters
-                in a single command but consume more memory. For memory-constrained devices, this can be reduced.
-
         config ESP_RMAKER_CMD_RESP_TEST_ENABLE
             bool "Enable Command-Response Testing"
             default n
@@ -566,6 +383,6 @@ menu "ESP RainMaker Config"
                 rather than receiving the commands from cloud. C API or the serial console can be used to trigger the commands.
                 This should be enabled only while testing commands, but should always be disabled in production firmware.
 
-        endmenu
+    endmenu
 
 endmenu

@@ -8,8 +8,8 @@ nvs,      data, nvs,      0x9000,   24K,
 otadata,  data, ota,      0xf000,   8K,
 phy_init, data, phy,      0x11000,  4K,
 #
-# Factory NVS (for calibration data - readonly)
-fctry,    data, nvs,      0x12000,  4K,      readonly,
+# Factory NVS (RainMaker claiming - MUST be ≥24KB)
+fctry,    data, nvs,      0x12000,  24K,
 #
 # OTA app partitions (64KB aligned, 1920KB each = 1.875 MB)
 # Sized to fit current binary (1.79 MB) + 130KB growth headroom
@@ -19,12 +19,9 @@ ota_1,    app,  ota_1,    0x200000, 1920K,
 # NVS encryption key (4KB aligned)
 nvs_key,  data, nvs_keys, 0x3e0000, 4K,
 #
-# RainMaker cloud storage (4KB aligned)
-rmaker,   data, nvs,      0x3e1000, 20K,
-#
 # IR code storage - DEDICATED partition for IR codes
-# 100KB provides storage for ~250 IR codes (decoded + raw)
+# 96KB provides storage for ~240 IR codes (decoded + raw)
 # Survives OTA updates, wear-leveled by NVS
-ir_storage, data, nvs,    0x3e6000, 100K,
+ir_storage, data, nvs,    0x3e1000, 96K,
 #
 # Total used: ~3.98 MB / 4 MB (20 KB free for alignment)

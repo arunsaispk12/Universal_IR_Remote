@@ -1,8 +1,16 @@
-/*
- * SPDX-FileCopyrightText: 2020-2025 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
+// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string.h>
 #include <freertos/FreeRTOS.h>
@@ -13,17 +21,14 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_https_ota.h>
 #include <esp_wifi_types.h>
 #include <esp_wifi.h>
 #include <nvs.h>
 #include <json_parser.h>
-#ifdef CONFIG_ESP_RMAKER_OTA_USE_HTTPS
-#include "esp_rmaker_https_ota.h"
-#endif
-#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
-#include "esp_rmaker_mqtt_ota.h"
-#endif
-#include <errno.h>
+#if CONFIG_BT_ENABLED
+#include <esp_bt.h>
+#endif /* CONFIG_BT_ENABLED */
 
 #include <esp_rmaker_utils.h>
 #include <esp_rmaker_common_events.h>
@@ -31,37 +36,38 @@
 #include "esp_rmaker_internal.h"
 #include "esp_rmaker_ota_internal.h"
 
-/* Forward declarations for static functions */
-static esp_err_t esp_rmaker_ota_handle_metadata_common(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data);
-static esp_err_t esp_rmaker_ota_success_reboot_sequence(esp_rmaker_ota_handle_t ota_handle, const char *protocol_name, int attempt_count);
-
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 0)
+// Features supported in 4.4+
 
 #ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
 #define ESP_RMAKER_USE_CERT_BUNDLE
 #include <esp_crt_bundle.h>
 #endif
+
+#else
+
+#ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
+#warning "Certificate Bundle not supported below IDF v4.4. Using provided certificate instead."
+#endif
+
+#endif /* !IDF4.4 */
 static const char *TAG = "esp_rmaker_ota";
 
-/* OTA reboot timer and NVS constants */
 #define OTA_REBOOT_TIMER_SEC    10
-#define ESP_RMAKER_NVS_PART_NAME             "nvs"
-#define RMAKER_OTA_UPDATE_FLAG_NVS_NAME      "ota_update"
-
-/* OTA retry constants */
-#ifndef ESP_RMAKER_OTA_MAX_RETRIES
-#define ESP_RMAKER_OTA_MAX_RETRIES   CONFIG_ESP_RMAKER_OTA_MAX_RETRIES
-#endif
-#ifndef ESP_RMAKER_OTA_RETRY_DELAY_SECONDS
-#define ESP_RMAKER_OTA_RETRY_DELAY_SECONDS   (CONFIG_ESP_RMAKER_OTA_RETRY_DELAY_MINUTES * 60)
-#endif
-
-/* Core OTA rollback functionality */
+#define DEF_HTTP_TX_BUFFER_SIZE    1024
+#define DEF_HTTP_RX_BUFFER_SIZE    CONFIG_ESP_RMAKER_OTA_HTTP_RX_BUFFER_SIZE
 #define RMAKER_OTA_ROLLBACK_WAIT_PERIOD    CONFIG_ESP_RMAKER_OTA_ROLLBACK_WAIT_PERIOD
-
+extern const char esp_rmaker_ota_def_cert[] asm("_binary_rmaker_ota_server_crt_start");
+const char *ESP_RMAKER_OTA_DEFAULT_SERVER_CERT = esp_rmaker_ota_def_cert;
 ESP_EVENT_DEFINE_BASE(RMAKER_OTA_EVENT);
 
-static esp_rmaker_ota_t *g_ota_priv;
+typedef enum {
+    OTA_OK = 0,
+    OTA_ERR,
+    OTA_DELAYED
+} esp_rmaker_ota_action_t;
 
+static esp_rmaker_ota_t *g_ota_priv;
 
 char *esp_rmaker_ota_status_to_string(ota_status_t status)
 {
@@ -102,7 +108,7 @@ esp_rmaker_ota_event_t esp_rmaker_ota_status_to_event(ota_status_t status)
     return RMAKER_OTA_EVENT_INVALID;
 }
 
-esp_err_t esp_rmaker_ota_post_event(esp_rmaker_event_t event_id, void *data, size_t data_size)
+static inline esp_err_t esp_rmaker_ota_post_event(esp_rmaker_event_t event_id, void* data, size_t data_size)
 {
     return esp_event_post(RMAKER_OTA_EVENT, event_id, data, data_size, portMAX_DELAY);
 }
@@ -140,12 +146,8 @@ void esp_rmaker_ota_common_cb(void *priv)
     }
     esp_rmaker_ota_data_t ota_data = {
         .url = ota->url,
-#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
-        .stream_id = ota->stream_id,
-#endif
         .filesize = ota->filesize,
         .fw_version = ota->fw_version,
-        .file_md5 = ota->file_md5,
         .ota_job_id = (char *)ota->transient_priv,
         .server_cert = ota->server_cert,
         .priv = ota->priv,
@@ -160,7 +162,7 @@ ota_finish:
     }
 }
 
-esp_err_t validate_image_header(esp_rmaker_ota_handle_t ota_handle,
+static esp_err_t validate_image_header(esp_rmaker_ota_handle_t ota_handle,
         esp_app_desc_t *new_app_info)
 {
     if (new_app_info == NULL) {
@@ -199,74 +201,6 @@ esp_err_t validate_image_header(esp_rmaker_ota_handle_t ota_handle,
 #endif
 
     return ESP_OK;
-}
-
-/* Common retry loop with configurable protocol-specific logic */
-
-static esp_err_t esp_rmaker_ota_retry_loop(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data,
-                                   ota_protocol_func_t protocol_func, const char *protocol_name, int *attempt_count)
-{
-    esp_err_t err = ESP_FAIL;
-    char err_desc[128] = {0};
-    int attempt;
-
-    for (attempt = 0; attempt < ESP_RMAKER_OTA_MAX_RETRIES; ++attempt) {
-        /* Simplified status reporting - just say "OTA" for cleaner messages */
-        char info[64];
-        snprintf(info, sizeof(info), "Starting OTA Upgrade (%s attempt %d/%d)", protocol_name, attempt + 1, ESP_RMAKER_OTA_MAX_RETRIES);
-        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, info);
-        ESP_LOGW(TAG, "Starting %s OTA attempt %d/%d. This may take time.", protocol_name, attempt + 1, ESP_RMAKER_OTA_MAX_RETRIES);
-
-        err = protocol_func(ota_handle, ota_data, err_desc, sizeof(err_desc));
-        if (err == ESP_OK) {
-            break;
-        } else if (err == ESP_ERR_INVALID_STATE) {
-            return ESP_FAIL;
-        } else {
-            ESP_LOGE(TAG, "%s OTA attempt %d failed: %s", protocol_name, attempt + 1, err_desc);
-            /* Simplified failure reporting */
-            char fail_info[192];
-            snprintf(fail_info, sizeof(fail_info), "OTA Attempt %d/%d failed: %s", attempt + 1, ESP_RMAKER_OTA_MAX_RETRIES, err_desc);
-            esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, fail_info);
-        }
-    }
-
-    if (err != ESP_OK) {
-        /* Handle retry delay for topic-based OTA */
-        esp_rmaker_ota_t *ota = (esp_rmaker_ota_t *)ota_handle;
-        if (ota->type == OTA_USING_TOPICS) {
-            esp_rmaker_ota_fetch_with_delay(ESP_RMAKER_OTA_RETRY_DELAY_SECONDS);
-        }
-        return ESP_FAIL;
-    }
-
-    *attempt_count = attempt + 1;
-    return ESP_OK;
-}
-
-/* Complete OTA workflow orchestration function */
-
-esp_err_t esp_rmaker_ota_start_workflow(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data,
-                                       ota_protocol_func_t protocol_func, const char *protocol_name)
-{
-    /* Step 1: Handle metadata */
-    esp_err_t metadata_result = esp_rmaker_ota_handle_metadata_common(ota_handle, ota_data);
-    if (metadata_result != ESP_OK) {
-        return metadata_result;
-    }
-
-    /* Step 2: Post starting event */
-    esp_rmaker_ota_post_event(RMAKER_OTA_EVENT_STARTING, NULL, 0);
-
-    /* Step 3: Execute retry loop */
-    int attempt_count = 0;
-    esp_err_t retry_result = esp_rmaker_ota_retry_loop(ota_handle, ota_data, protocol_func, protocol_name, &attempt_count);
-    if (retry_result != ESP_OK) {
-        return ESP_FAIL;
-    }
-
-    /* Step 4: Handle success and reboot */
-    return esp_rmaker_ota_success_reboot_sequence(ota_handle, protocol_name, attempt_count);
 }
 
 #ifdef CONFIG_ESP_RMAKER_OTA_TIME_SUPPORT
@@ -381,10 +315,10 @@ esp_rmaker_ota_action_t esp_rmaker_ota_handle_time(jparse_ctx_t *jptr, esp_rmake
 
 #endif /* CONFIG_ESP_RMAKER_OTA_TIME_SUPPORT */
 
-static esp_rmaker_ota_action_t esp_rmaker_ota_handle_metadata(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data)
+esp_rmaker_ota_action_t esp_rmaker_ota_handle_metadata(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data)
 {
     if (!ota_data->metadata) {
-        return OTA_OK;
+        return ESP_OK;
     }
     esp_rmaker_ota_action_t ota_action = OTA_OK;
     jparse_ctx_t jctx;
@@ -398,74 +332,175 @@ static esp_rmaker_ota_action_t esp_rmaker_ota_handle_metadata(esp_rmaker_ota_han
     return ota_action;
 }
 
-/* Common OTA callback helper functions */
-
-static esp_err_t esp_rmaker_ota_handle_metadata_common(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data)
+esp_err_t esp_rmaker_ota_default_cb(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data)
 {
+    if (!ota_data->url) {
+        return ESP_FAIL;
+    }
     /* Handle OTA metadata, if any */
     if (ota_data->metadata) {
-        esp_rmaker_ota_action_t metadata_result = esp_rmaker_ota_handle_metadata(ota_handle, ota_data);
-        if (metadata_result != OTA_OK) {
+        if (esp_rmaker_ota_handle_metadata(ota_handle, ota_data) != OTA_OK) {
             ESP_LOGW(TAG, "Cannot proceed with the OTA as per the metadata received.");
             return ESP_FAIL;
         }
     }
-    return ESP_OK;
-}
-
-static esp_err_t esp_rmaker_ota_success_reboot_sequence(esp_rmaker_ota_handle_t ota_handle, const char *protocol_name, int attempt_count)
-{
-    /* Success path: rest of the reboot/rollback logic */
-#ifdef CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
-    nvs_handle handle;
-    esp_err_t nvs_err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (nvs_err == ESP_OK) {
-        uint8_t ota_update = 1;
-        nvs_set_blob(handle, RMAKER_OTA_UPDATE_FLAG_NVS_NAME, &ota_update, sizeof(ota_update));
-        nvs_close(handle);
+    esp_rmaker_ota_post_event(RMAKER_OTA_EVENT_STARTING, NULL, 0);
+    int buffer_size_tx = DEF_HTTP_TX_BUFFER_SIZE;
+    /* In case received url is longer, we will increase the tx buffer size
+     * to accomodate the longer url and other headers.
+     */
+    if (strlen(ota_data->url) > buffer_size_tx) {
+        buffer_size_tx = strlen(ota_data->url) + 128;
     }
-    char reboot_info[80];
-    snprintf(reboot_info, sizeof(reboot_info), "Rebooting into new firmware (after %d %s attempt%s)",
-             attempt_count, protocol_name, (attempt_count == 1) ? "" : "s");
-    esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, reboot_info);
+    esp_err_t ota_finish_err = ESP_OK;
+    esp_http_client_config_t config = {
+        .url = ota_data->url,
+#ifdef ESP_RMAKER_USE_CERT_BUNDLE
+        .crt_bundle_attach = esp_crt_bundle_attach,
 #else
-    char success_info[80];
-    snprintf(success_info, sizeof(success_info), "%s OTA Upgrade finished successfully (after %d attempt%s)",
-             protocol_name, attempt_count, (attempt_count == 1) ? "" : "s");
-    esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_SUCCESS, success_info);
+        .cert_pem = ota_data->server_cert,
+#endif
+        .timeout_ms = 5000,
+        .buffer_size = DEF_HTTP_RX_BUFFER_SIZE,
+        .buffer_size_tx = buffer_size_tx,
+        .keep_alive_enable = true
+    };
+#ifdef CONFIG_ESP_RMAKER_SKIP_COMMON_NAME_CHECK
+    config.skip_cert_common_name_check = true;
+#endif
+
+    esp_https_ota_config_t ota_config = {
+        .http_config = &config,
+    };
+
+    if (ota_data->filesize) {
+        ESP_LOGD(TAG, "Received file size: %d", ota_data->filesize);
+    }
+
+    esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, "Starting OTA Upgrade");
+
+    /* Using a warning just to highlight the message */
+    ESP_LOGW(TAG, "Starting OTA. This may take time.");
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "ESP HTTPS OTA Begin failed");
+        return ESP_FAIL;
+    }
+
+/* Get the current Wi-Fi power save type. In case OTA fails and we need this
+ * to restore power saving.
+ */
+    wifi_ps_type_t ps_type;
+    esp_wifi_get_ps(&ps_type);
+/* Disable Wi-Fi power save to speed up OTA, iff BT is controller is idle/disabled.
+ * Co-ex requirement, device panics otherwise.*/
+#if CONFIG_BT_ENABLED
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+#else
+    esp_wifi_set_ps(WIFI_PS_NONE);
+#endif /* CONFIG_BT_ENABLED */
+
+    esp_app_desc_t app_desc;
+    err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed");
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "Failed to read image decription");
+        goto ota_end;
+    }
+    err = validate_image_header(ota_handle, &app_desc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "image header verification failed");
+        goto ota_end;
+    }
+
+    esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, "Downloading Firmware Image");
+    int count = 0;
+    while (1) {
+        err = esp_https_ota_perform(https_ota_handle);
+        if (err == ESP_ERR_INVALID_VERSION) {
+            esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_REJECTED, "Chip revision mismatch");
+            goto ota_end;
+        }
+        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+            break;
+        }
+        /* esp_https_ota_perform returns after every read operation which gives user the ability to
+         * monitor the status of OTA upgrade by calling esp_https_ota_get_image_len_read, which gives length of image
+         * data read so far.
+         * We are using a counter just to reduce the number of prints
+         */
+
+        count++;
+        if (count == 50) {
+            ESP_LOGI(TAG, "Image bytes read: %d", esp_https_ota_get_image_len_read(https_ota_handle));
+            count = 0;
+        }
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed %s", esp_err_to_name(err));
+        char description[40];
+        snprintf(description, sizeof(description), "OTA failed: Error %s", esp_err_to_name(err));
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, description);
+    }
+
+    if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) {
+        // the OTA image was not completely received and user can customise the response to this situation.
+        ESP_LOGE(TAG, "Complete data was not received.");
+    } else {
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, "Firmware Image download complete");
+    }
+
+ota_end:
+#ifdef CONFIG_BT_ENABLED
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_wifi_set_ps(ps_type);
+    }
+#else
+    esp_wifi_set_ps(ps_type);
+#endif /* CONFIG_BT_ENABLED */
+    ota_finish_err = esp_https_ota_finish(https_ota_handle);
+    if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
+#ifdef CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+        nvs_handle handle;
+        esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &handle);
+        if (err == ESP_OK) {
+            uint8_t ota_update = 1;
+            nvs_set_blob(handle, RMAKER_OTA_UPDATE_FLAG_NVS_NAME, &ota_update, sizeof(ota_update));
+            nvs_close(handle);
+        }
+        /* Success will be reported after a reboot since Rollback is enabled */
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_IN_PROGRESS, "Rebooting into new firmware");
+#else
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_SUCCESS, "OTA Upgrade finished successfully");
 #endif
 #ifndef CONFIG_ESP_RMAKER_OTA_DISABLE_AUTO_REBOOT
-    ESP_LOGI(TAG, "%s OTA upgrade successful. Rebooting in %d seconds...", protocol_name, OTA_REBOOT_TIMER_SEC);
-    esp_rmaker_reboot(OTA_REBOOT_TIMER_SEC);
+        ESP_LOGI(TAG, "OTA upgrade successful. Rebooting in %d seconds...", OTA_REBOOT_TIMER_SEC);
+        esp_rmaker_reboot(OTA_REBOOT_TIMER_SEC);
 #else
-    ESP_LOGI(TAG, "%s OTA upgrade successful. Auto reboot is disabled. Requesting a Reboot via Event handler.", protocol_name);
-    esp_rmaker_ota_post_event(RMAKER_OTA_EVENT_REQ_FOR_REBOOT, NULL, 0);
+        ESP_LOGI(TAG, "OTA upgrade successful. Auto reboot is disabled. Requesting a Reboot via Event handler.");
+        esp_rmaker_ota_post_event(RMAKER_OTA_EVENT_REQ_FOR_REBOOT, NULL, 0);
 #endif
-    return ESP_OK;
+        return ESP_OK;
+    } else {
+        if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+            esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "Image validation failed");
+        } else {
+            /* Not reporting status here, because relevant error will already be reported
+             * in some earlier step
+             */
+            ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed %d", ota_finish_err);
+        }
+    }
+    return ESP_FAIL;
 }
 
-/* Local macro for OTA max retries, can be overridden for development */
-#ifndef ESP_RMAKER_OTA_MAX_RETRIES
-#define ESP_RMAKER_OTA_MAX_RETRIES   CONFIG_ESP_RMAKER_OTA_MAX_RETRIES
-#endif
-
-/* Local macro for OTA retry delay in seconds, can be overridden for development */
-#ifndef ESP_RMAKER_OTA_RETRY_DELAY_SECONDS
-#define ESP_RMAKER_OTA_RETRY_DELAY_SECONDS   (CONFIG_ESP_RMAKER_OTA_RETRY_DELAY_MINUTES * 60)
-#endif
-
-
-esp_err_t esp_rmaker_ota_default_cb(esp_rmaker_ota_handle_t ota_handle, esp_rmaker_ota_data_t *ota_data)
-{
-#ifdef CONFIG_ESP_RMAKER_OTA_USE_HTTPS
-    return esp_rmaker_ota_https_cb(ota_handle, ota_data);
-#else /* CONFIG_ESP_RMAKER_OTA_USE_MQTT */
-    return esp_rmaker_ota_mqtt_cb(ota_handle, ota_data);
-#endif
-}
-
-static void event_handler(void *arg, esp_event_base_t event_base,
-                           int32_t event_id, void *event_data)
+static void event_handler(void* arg, esp_event_base_t event_base,
+                          int32_t event_id, void* event_data)
 {
     esp_rmaker_ota_t *ota = (esp_rmaker_ota_t *)arg;
     esp_rmaker_ota_diag_status_t diag_status = OTA_DIAG_STATUS_SUCCESS;
@@ -486,18 +521,6 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-static esp_err_t esp_rmaker_erase_rollback_flag(void)
-{
-    nvs_handle handle;
-    esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        nvs_erase_key(handle, RMAKER_OTA_UPDATE_FLAG_NVS_NAME);
-        nvs_commit(handle);
-        nvs_close(handle);
-    }
-    return ESP_OK;
-}
-
 esp_err_t esp_rmaker_ota_mark_valid(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -515,7 +538,6 @@ esp_err_t esp_rmaker_ota_mark_valid(void)
         return ESP_ERR_INVALID_ARG;
     }
     esp_ota_mark_app_valid_cancel_rollback();
-    esp_rmaker_erase_rollback_flag();
     ota->ota_in_progress = false;
     if (ota->rollback_timer) {
         xTimerStop(ota->rollback_timer, portMAX_DELAY);
@@ -564,6 +586,18 @@ static esp_err_t esp_ota_check_for_mqtt(esp_rmaker_ota_t *ota)
     }
 
     return esp_event_handler_register(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_CONNECTED, &event_handler, ota);
+}
+
+static esp_err_t esp_rmaker_erase_rollback_flag(void)
+{
+    nvs_handle handle;
+    esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_erase_key(handle, RMAKER_OTA_UPDATE_FLAG_NVS_NAME);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+    return ESP_OK;
 }
 
 static void esp_rmaker_ota_manage_rollback(esp_rmaker_ota_t *ota)
@@ -629,12 +663,9 @@ static void esp_rmaker_ota_manage_rollback(esp_rmaker_ota_t *ota)
     }
 }
 
-/* Protocol-agnostic default config - no protocol-specific dependencies */
 static const esp_rmaker_ota_config_t ota_default_config = {
-    .server_cert = NULL,  /* Each protocol handles its own certificate defaults */
-    .priv = NULL,
+    .server_cert = esp_rmaker_ota_def_cert,
 };
-
 /* Enable the ESP RainMaker specific OTA */
 esp_err_t esp_rmaker_ota_enable(esp_rmaker_ota_config_t *ota_config, esp_rmaker_ota_type_t type)
 {

@@ -48,7 +48,7 @@ esp_err_t esp_rmaker_mqtt_init(esp_rmaker_mqtt_conn_params_t *conn_params)
         esp_err_t err =  g_mqtt_config.init(conn_params);
         if (err == ESP_OK) {
             if (esp_rmaker_mqtt_budgeting_init() != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to initialise MQTT Budgeting.");
+                ESP_LOGE(TAG, "Failied to initialise MQTT Budgeting.");
             }
         }
         return err;
@@ -92,7 +92,6 @@ esp_err_t esp_rmaker_mqtt_disconnect(void)
 
 esp_err_t esp_rmaker_mqtt_subscribe(const char *topic, esp_rmaker_mqtt_subscribe_cb_t cb, uint8_t qos, void *priv_data)
 {
-    ESP_LOGD(TAG, "Subscribing to topic: %s", topic);
     if (g_mqtt_config.subscribe) {
         return g_mqtt_config.subscribe(topic, cb, qos, priv_data);
     }
@@ -111,7 +110,6 @@ esp_err_t esp_rmaker_mqtt_unsubscribe(const char *topic)
 
 esp_err_t esp_rmaker_mqtt_publish(const char *topic, void *data, size_t data_len, uint8_t qos, int *msg_id)
 {
-    ESP_LOGD(TAG, "Publishing to topic: %s", topic);
     if (esp_rmaker_mqtt_is_budget_available() != true) {
         ESP_LOGE(TAG, "Out of MQTT Budget. Dropping publish message.");
         return ESP_FAIL;

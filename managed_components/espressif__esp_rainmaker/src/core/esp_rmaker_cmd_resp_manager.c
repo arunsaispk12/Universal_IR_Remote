@@ -65,7 +65,7 @@ esp_err_t esp_rmaker_test_cmd_resp(const void *cmd, size_t cmd_len, void *priv_d
 }
 #endif /* !CONFIG_ESP_RMAKER_CMD_RESP_TEST_ENABLE */
 
-esp_err_t esp_rmaker_cmd_response_publish(void *output, size_t output_len)
+static esp_err_t esp_rmaker_publish_response(void *output, size_t output_len)
 {
     if (output) {
         char publish_topic[MQTT_TOPIC_BUFFER_SIZE];
@@ -90,33 +90,25 @@ static void esp_rmaker_cmd_callback(const char *topic, void *payload, size_t pay
      * the response (if any) is sent back to the MQTT Broker.
      */
     if (esp_rmaker_cmd_response_handler(payload, payload_len, &output, &output_len) == ESP_OK) {
-        esp_rmaker_cmd_response_publish(output, output_len);
+        esp_rmaker_publish_response(output, output_len);
     }
 }
 
-/* Keeping the variable outside the function as there would subsequently also be a function
- * to disable command response.
- */
-static bool cmd_resp_topic_subscribed = false;
 static esp_err_t esp_rmaker_cmd_resp_check_pending(void)
 {
     ESP_LOGI(TAG, "Checking for pending commands.");
     char subscribe_topic[100];
     snprintf(subscribe_topic, sizeof(subscribe_topic), "node/%s/%s",
-            esp_rmaker_get_node_id(), TO_NODE_TOPIC_SUFFIX);
-    if (!cmd_resp_topic_subscribed) {
-        /* Subscribing just once because any subsequent reconnect will automatically subscribe to the topic */
-        esp_err_t err = esp_rmaker_mqtt_subscribe(subscribe_topic, esp_rmaker_cmd_callback, RMAKER_MQTT_QOS1, NULL);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to subscribe to %s. Error %d", subscribe_topic, err);
-            return ESP_FAIL;
-        }
-        cmd_resp_topic_subscribed = true;
+                esp_rmaker_get_node_id(), TO_NODE_TOPIC_SUFFIX);
+    esp_err_t err = esp_rmaker_mqtt_subscribe(subscribe_topic, esp_rmaker_cmd_callback, RMAKER_MQTT_QOS1, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to subscribe to %s. Error %d", subscribe_topic, err);
+        return ESP_FAIL;
     }
     void *output = NULL;
     size_t output_len = 0;
     if (esp_rmaker_cmd_prepare_empty_response(&output, &output_len) == ESP_OK) {
-        return esp_rmaker_cmd_response_publish(output, output_len);
+        return esp_rmaker_publish_response(output, output_len);
     }
     return ESP_FAIL;
 }

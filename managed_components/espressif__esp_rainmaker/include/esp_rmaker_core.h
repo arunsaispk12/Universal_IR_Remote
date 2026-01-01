@@ -1,11 +1,17 @@
-/*
- * SPDX-FileCopyrightText: 2020-2025 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
+// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 #pragma once
-
 #include <stdint.h>
 #include <stdbool.h>
 #include <esp_err.h>
@@ -61,8 +67,6 @@ typedef struct {
     char *model;
     /** Subtype (Optional). */
     char *subtype;
-    /** Readme URL (Optional). Typically points to a readme URL. Will be included in node config only if not NULL and not empty. */
-    char *readme;
     /** An array of digests read from efuse. Should be freed after use*/
     char **secure_boot_digest;
 } esp_rmaker_node_info_t;
@@ -163,10 +167,6 @@ typedef enum {
     ESP_RMAKER_REQ_SRC_SCENE_DEACTIVATE,
     /** Request received from a local controller */
     ESP_RMAKER_REQ_SRC_LOCAL,
-    /** Request received via command-response framework */
-    ESP_RMAKER_REQ_SRC_CMD_RESP,
-    /** Request initiated from firmware/console commands */
-    ESP_RMAKER_REQ_SRC_FIRMWARE,
     /** This will always be the last value. Any value equal to or
      * greater than this should be considered invalid.
      */
@@ -211,36 +211,6 @@ typedef struct {
     int8_t reset_reboot_seconds;
 } esp_rmaker_system_serv_config_t;
 
-
-/** Parameter write request payload */
-typedef struct {
-    /** Parameter handle */
-    esp_rmaker_param_t *param;
-    /** Value to write */
-    esp_rmaker_param_val_t val;
-} esp_rmaker_param_write_req_t;
-
-/** Callback for bulk parameter value write requests.
- *
- *
- * This callback is recommended over esp_rmaker_device_write_cb_t since it gives all values of a given device together,
- * which will help if the parameters are related to each other.
- *
- * The callback should call the esp_rmaker_param_update_and_report() API if the new value is to be set
- * and reported back.
- *
- * @param[in] device Device handle.
- * @param[in] write_reqs Array of parameter write request payloads.
- * @param[in] count Count of parameters and their values passed to this callback
- * @param[in] priv_data Pointer to the private data paassed while creating the device.
- * @param[in] ctx Context associated with the request.
- *
- * @return ESP_OK on success.
- * @return error in case of failure.
- */
-typedef esp_err_t (*esp_rmaker_device_bulk_write_cb_t)(const esp_rmaker_device_t *device, const esp_rmaker_param_write_req_t write_req[],
-        uint8_t count, void *priv_data, esp_rmaker_write_ctx_t *ctx);
-
 /** Callback for parameter value write requests.
  *
  * The callback should call the esp_rmaker_param_update_and_report() API if the new value is to be set
@@ -248,7 +218,7 @@ typedef esp_err_t (*esp_rmaker_device_bulk_write_cb_t)(const esp_rmaker_device_t
  *
  * @param[in] device Device handle.
  * @param[in] param Parameter handle.
- * @param[in] val Pointer to \ref esp_rmaker_param_val_t. Use appropriate elements as per the value type.
+ * @param[in] param Pointer to \ref esp_rmaker_param_val_t. Use appropriate elements as per the value type.
  * @param[in] priv_data Pointer to the private data paassed while creating the device.
  * @param[in] ctx Context associated with the request.
  *
@@ -258,33 +228,13 @@ typedef esp_err_t (*esp_rmaker_device_bulk_write_cb_t)(const esp_rmaker_device_t
 typedef esp_err_t (*esp_rmaker_device_write_cb_t)(const esp_rmaker_device_t *device, const esp_rmaker_param_t *param,
         const esp_rmaker_param_val_t val, void *priv_data, esp_rmaker_write_ctx_t *ctx);
 
-/** Callback for bulk parameter value reads
+/** Callback for parameter value changes
  *
  * The callback should call the esp_rmaker_param_update_and_report() API if the new value is to be set
  * and reported back.
  *
  * @note Currently, the read callback never gets invoked as the communication between clients (mobile phones, CLI, etc.)
- * and node is asynchronous. So, the read request does not reach the node. This callback may however be used in future.
- *
- * @param[in] device Device handle.
- * @param[in] params Array of Parameter handles.
- * @param[in] count Count of parameters passed to this callback.
- * @param[in] priv_data Pointer to the private data passed while creating the device.
- * @param[in] ctx Context associated with the request.
- *
- * @return ESP_OK on success.
- * @return error in case of failure.
- */
-typedef esp_err_t (*esp_rmaker_device_bulk_read_cb_t)(const esp_rmaker_device_t *device, const esp_rmaker_param_t *params[],
-        uint8_t count, void *priv_data, esp_rmaker_read_ctx_t *ctx);
-
-/** Callback for parameter value reads
- *
- * The callback should call the esp_rmaker_param_update_and_report() API if the new value is to be set
- * and reported back.
- *
- * @note Currently, the read callback never gets invoked as the communication between clients (mobile phones, CLI, etc.)
- * and node is asynchronous. So, the read request does not reach the node. This callback may however be used in future.
+ * and node is asynchronous. So, the read request does not reach the node. This callback will however be used in future.
  *
  * @param[in] device Device handle.
  * @param[in] param Parameter handle.
@@ -427,7 +377,7 @@ esp_err_t esp_rmaker_stop(void);
  *
  * @param[in] node Node Handle returned by esp_rmaker_node_init().
  *
- * @return ESP_OK on success.
+ * @retur ESP_OK on success.
  * @return error in case of failure.
  */
 esp_err_t esp_rmaker_node_deinit(const esp_rmaker_node_t *node);
@@ -474,20 +424,6 @@ esp_rmaker_node_info_t *esp_rmaker_node_get_info(const esp_rmaker_node_t *node);
  */
 esp_err_t esp_rmaker_node_add_attribute(const esp_rmaker_node_t *node, const char *attr_name, const char *val);
 
-/** Edit Node attribute
- *
- * Add a new attribute or edit an existing attribute as the metadata for the node.
- * For the sake of simplicity, only string values are allowed.
- *
- * @param node Node handle.
- * @param[in] attr_name Name of the attribute.
- * @param[in] val Value for the attribute.
- *
- * @return ESP_OK on success.
- * @return error in case of failure.
- */
-esp_err_t esp_rmaker_node_edit_attribute(const esp_rmaker_node_t *node, const char *attr_name, const char *val);
-
 /** Add FW version for a node (Not recommended)
  *
  * FW version is set internally to the project version. This API can be used to
@@ -524,16 +460,6 @@ esp_err_t esp_rmaker_node_add_model(const esp_rmaker_node_t *node, const char *m
  * @return error in case of failure.
  */
 esp_err_t esp_rmaker_node_add_subtype(const esp_rmaker_node_t *node, const char *subtype);
-
-/** Add readme URL for a node
- *
- * @param node Node handle.
- * @param[in] readme Readme URL string. Typically points to a readme URL. Will be included in node config only if not NULL and not empty.
- *
- * @return ESP_OK on success.
- * @return error in case of failure.
- */
-esp_err_t esp_rmaker_node_add_readme(const esp_rmaker_node_t *node, const char *readme);
 
 /**
  * Create a Device
@@ -601,24 +527,6 @@ esp_err_t esp_rmaker_device_delete(const esp_rmaker_device_t *device);
  * @return error in case of failure.
  */
 esp_err_t esp_rmaker_device_add_cb(const esp_rmaker_device_t *device, esp_rmaker_device_write_cb_t write_cb, esp_rmaker_device_read_cb_t read_cb);
-
-/**
- * Add bulk callbacks for a device/service
- *
- * Add bulk read/write callbacks for a device that will be invoked as per requests received from the cloud (or other paths
- * as may be added in future).
- *
- * This is an improvement over the earlier callbacks registered using esp_rmaker_device_add_cb() so that all parameters
- * received in a single request are passed to the callback together, instead of one by one.
- *
- * @param[in] device Device handle.
- * @param[in] write_cb Bulk Write callback.
- * @param[in] read_cb Bulk Read callback.
- *
- * @return ESP_OK on success.
- * @return error in case of failure.
- */
-esp_err_t esp_rmaker_device_add_bulk_cb(const esp_rmaker_device_t *device, esp_rmaker_device_bulk_write_cb_t write_cb, esp_rmaker_device_bulk_read_cb_t read_cb);
 
 /**
  * Add a device to a node
@@ -702,15 +610,6 @@ esp_err_t esp_rmaker_device_add_model(const esp_rmaker_device_t *device, const c
  * @return NULL in case of failure.
  */
 char *esp_rmaker_device_get_name(const esp_rmaker_device_t *device);
-
-/** Get Device Private data from handle
- *
- * @param[in] device Device handle.
- *
- * @return void type of pointer on success.
- * @return NULL if no private data found.
- */
-void *esp_rmaker_device_get_priv_data(const esp_rmaker_device_t *device);
 
 /** Get device type from handle
  *
@@ -834,21 +733,6 @@ esp_err_t esp_rmaker_param_add_bounds(const esp_rmaker_param_t *param,
     esp_rmaker_param_val_t min, esp_rmaker_param_val_t max, esp_rmaker_param_val_t step);
 
 /**
- * Add Time-To-Live for a simple time series parameter
- *
- * This adds a TTL value (in days) for a simple time series parameter,
- * which will be sent as "d" field in the JSON payload.
- * This is applicable only for parameters with PROP_FLAG_SIMPLE_TIME_SERIES flag.
- *
- * @param[in] param Parameter Handle
- * @param[in] ttl_days Time-to-live value in days
- *
- * @return ESP_OK on success
- * @return error in case of failure
- */
-esp_err_t esp_rmaker_param_add_simple_time_series_ttl(const esp_rmaker_param_t *param, uint16_t ttl_days);
-
-/**
  * Add a list of valid strings for a string parameter
  *
  * This can be used to add a list of valid strings for a given string parameter.
@@ -891,8 +775,6 @@ esp_err_t esp_rmaker_param_add_array_max_count(const esp_rmaker_param_t *param, 
  * Eg. If x parameters are to be reported, this API can be used for the first x -1 parameters
  * and the last one can be updated using esp_rmaker_param_update_and_report().
  * This will report all parameters which were updated prior to this call.
- *
- * @note This does not report to time series even if PROP_FLAG_TIME_SERIES is set.
  *
  * Sample:
  *
@@ -1070,7 +952,7 @@ esp_err_t esp_rmaker_ota_enable_default(void);
 esp_err_t esp_rmaker_test_cmd_resp(const void *cmd, size_t cmd_len, void *priv_data);
 
 /** This API signs the challenge with RainMaker private key.
-*
+* 
 * @param[in] challenge Pointer to the data to be signed
 * @param[in] inlen Length of the challenge
 * @param[out] response Pointer to the signature.
@@ -1080,7 +962,6 @@ esp_err_t esp_rmaker_test_cmd_resp(const void *cmd, size_t cmd_len, void *priv_d
 * @return Apt error on failure.
 */
 esp_err_t esp_rmaker_node_auth_sign_msg(const void *challenge, size_t inlen, void **response, size_t *outlen);
-
 /*
  * @brief Enable Local Control Service.
  *
@@ -1102,112 +983,6 @@ esp_err_t esp_rmaker_local_ctrl_enable(void);
  * @return error on failure
  */
 esp_err_t esp_rmaker_local_ctrl_disable(void);
-
-/**
- * Report simple time series data directly with specified timestamp and TTL
- *
- * This API allows reporting simple time series data directly with control over
- * the timestamp and TTL values. The value is stored in the simple time series
- * database and also cached locally.
- *
- * @note This function only updates the value in the simple time series database,
- * not the regular parameters, which helps keep costs lower. It won't trigger any
- * automations. However, it will internally cache the value so it may be reported
- * when reporting other parameters or if someone queries for it via local control.
- *
- * @param[in] param Parameter handle, must have PROP_FLAG_SIMPLE_TIME_SERIES flag
- * @param[in] val Value to report (can be any supported data type)
- * @param[in] timestamp Epoch timestamp in seconds (0 to use current time)
- * @param[in] ttl_days Time-to-live in days (0 to omit TTL field)
- *
- * @return ESP_OK on success
- * @return error in case of failure
- */
-esp_err_t esp_rmaker_param_report_simple_ts_data(const esp_rmaker_param_t *param, esp_rmaker_param_val_t val, int timestamp, uint16_t ttl_days);
-
-/** Publish command response payload to the cloud
- *
- * @param[in] output Pointer to the data to publish
- *                   Ensure that the pointer is dynamically allocated memory. The API will free it internally.
- *                   Do not reuse the pointer after calling this API as it may cause undefined access since the
- *                   memory could have been freed before use.
- *
- * @param[in] output_len Length of the output data.
- *
- * @return ESP_OK on success, appropriate error on failure.
- */
-esp_err_t esp_rmaker_cmd_response_publish(void *output, size_t output_len);
-
-/**
- * @brief Structure to hold AWS temporary credentials.
- */
-typedef struct {
-    char *access_key;              /*!< AWS Access Key ID (null-terminated string, heap-allocated) */
-    uint32_t access_key_len;       /*!< Length of the access key string (excluding null terminator) */
-    char *secret_key;              /*!< AWS Secret Access Key (null-terminated string, heap-allocated) */
-    uint32_t secret_key_len;       /*!< Length of the secret key string (excluding null terminator) */
-    char *session_token;           /*!< AWS Session Token (null-terminated string, heap-allocated) */
-    uint32_t session_token_len;    /*!< Length of the session token string (excluding null terminator) */
-    uint32_t expiration;           /*!< Expiration time of the credentials (seconds from now) */
-} esp_rmaker_aws_credentials_t;
-
-/** Get AWS region from credential endpoint
- *
- * This function extracts the AWS region from the credential endpoint stored in factory.
- * The region string is allocated on the heap and should be freed by the caller.
- *
- * @return Pointer to allocated region string on success
- * @return NULL on failure
- */
-char* esp_rmaker_get_aws_region(void);
-
-/** Get AWS security token credentials
- *
- * This function fetches AWS temporary credentials by assuming the specified role alias.
- * The credentials are allocated on the heap and should be freed using esp_rmaker_free_aws_credentials().
- *
- * @param[in] role_alias AWS IoT role alias to assume
- *
- * @return Pointer to allocated credentials structure on success
- * @return NULL on failure
- */
-esp_rmaker_aws_credentials_t* esp_rmaker_get_aws_security_token(const char *role_alias);
-
-/** Free AWS credentials structure
- *
- * This function frees the memory allocated for AWS credentials structure and all its members.
- *
- * @param[in] credentials Pointer to credentials structure to free
- */
-void esp_rmaker_free_aws_credentials(esp_rmaker_aws_credentials_t *credentials);
-
-/** Store group_id in NVS
- *
- * @param[in] group_id The group_id to store
- *
- * @return ESP_OK on success
- * @return error in case of failure
- */
-esp_err_t esp_rmaker_store_group_id(const char *group_id);
-
-/** Retrieve group_id from NVS
- *
- * @param[out] group_id The group_id to retrieve. Should be freed by the caller.
- *
- * @return ESP_OK on success
- * @return error in case of failure
- */
-esp_err_t esp_rmaker_get_stored_group_id(char **group_id);
-
-/**
- * @brief Publish a string message to direct params topic
- *
- * @param[in] message The message to publish
- *
- * @return ESP_OK on success
- */
-esp_err_t esp_rmaker_publish_direct(const char *message);
-
 #ifdef __cplusplus
 }
 #endif
