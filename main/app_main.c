@@ -68,6 +68,7 @@ static esp_rmaker_device_t *custom_device = NULL;
 
 static esp_rmaker_node_t *rainmaker_node = NULL;
 static bool devices_created = false;
+static bool rmaker_started = false;
 
 /* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
@@ -759,6 +760,13 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
 
+        /* Start RainMaker NOW (after IP acquired, TCPIP stack is ready) */
+        if (!rmaker_started) {
+            rmaker_started = true;
+            ESP_LOGI(TAG, "IP acquired, starting ESP RainMaker...");
+            ESP_ERROR_CHECK(esp_rmaker_start());
+        }
+
         /* Create RainMaker devices NOW (after IP acquired) */
         if (!devices_created && rainmaker_node != NULL) {
             ESP_LOGI(TAG, "Creating RainMaker devices (post-IP)...");
@@ -926,13 +934,10 @@ void app_main(void)
     /* DO NOT create devices here - they will be created after IP_EVENT_STA_GOT_IP */
     ESP_LOGI(TAG, "RainMaker node initialized (devices will be created after IP acquired)");
 
+    /* NOTE: esp_rmaker_start() will be called AFTER IP acquisition in ip_event_handler() */
     /* NOTE: OTA, schedule and timezone services are enabled AFTER IP acquisition in ip_event_handler() */
 
-    /* Start RainMaker */
-    ESP_LOGI(TAG, "Starting ESP RainMaker...");
-    ESP_ERROR_CHECK(esp_rmaker_start());
-
-    /* Start WiFi provisioning - this will trigger IP_EVENT_STA_GOT_IP which creates devices */
+    /* Start WiFi provisioning - this will trigger IP_EVENT_STA_GOT_IP which starts RainMaker and creates devices */
     ESP_LOGI(TAG, "Starting WiFi provisioning...");
     app_wifi_start(POP_TYPE_RANDOM);
 
