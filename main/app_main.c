@@ -915,7 +915,7 @@ void app_main(void)
     /* Initialize RainMaker node (but DON'T create devices yet) */
     ESP_LOGI(TAG, "Initializing ESP RainMaker node...");
     esp_rmaker_config_t rainmaker_cfg = {
-        .enable_time_sync = false,  // Disabled - no SNTP issues
+        .enable_time_sync = true,  // RainMaker will handle SNTP automatically after IP
     };
     rainmaker_node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
     if (!rainmaker_node) {
@@ -926,10 +926,7 @@ void app_main(void)
     /* DO NOT create devices here - they will be created after IP_EVENT_STA_GOT_IP */
     ESP_LOGI(TAG, "RainMaker node initialized (devices will be created after IP acquired)");
 
-    /* Enable OTA (safe - doesn't need time sync) */
-    esp_rmaker_ota_enable_default();
-
-    /* NOTE: Schedule and timezone services are enabled AFTER IP acquisition in ip_event_handler() */
+    /* NOTE: OTA, schedule and timezone services are enabled AFTER IP acquisition in ip_event_handler() */
 
     /* Start RainMaker */
     ESP_LOGI(TAG, "Starting ESP RainMaker...");
