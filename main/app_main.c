@@ -68,12 +68,12 @@ static esp_rmaker_device_t *custom_device = NULL;
 
 static esp_rmaker_node_t *rainmaker_node = NULL;
 static bool devices_created = false;
-static bool rmaker_started = false;
 
 /* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
 static uint32_t button_press_start = 0;
 static bool factory_reset_triggered = false;
+static TaskHandle_t reset_handler_task_handle = NULL;
 
 /* Learning state */
 typedef struct {
@@ -760,13 +760,6 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
 
-        /* Start RainMaker NOW (after IP acquired, TCPIP stack is ready) */
-        if (!rmaker_started) {
-            rmaker_started = true;
-            ESP_LOGI(TAG, "IP acquired, starting ESP RainMaker...");
-            ESP_ERROR_CHECK(esp_rmaker_start());
-        }
-
         /* Create RainMaker devices NOW (after IP acquired) */
         if (!devices_created && rainmaker_node != NULL) {
             ESP_LOGI(TAG, "Creating RainMaker devices (post-IP)...");
@@ -785,6 +778,27 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
             devices_created = true;
 
             ESP_LOGI(TAG, "All RainMaker devices created successfully");
+        }
+    }
+}
+
+/* ============================================================================
+ * RESET HANDLER TASK (Handles WiFi reset outside timer context)
+ * ============================================================================ */
+
+#define RESET_TASK_WIFI_RESET    (1 << 0)
+
+static void reset_handler_task(void *arg)
+{
+    uint32_t notification_value;
+
+    while (1) {
+        /* Wait for notification from timer callback */
+        if (xTaskNotifyWait(0, 0xFFFFFFFF, &notification_value, portMAX_DELAY) == pdTRUE) {
+            if (notification_value & RESET_TASK_WIFI_RESET) {
+                ESP_LOGI(TAG, "Reset handler task: executing WiFi reset");
+                app_wifi_reset();
+            }
         }
     }
 }
@@ -814,7 +828,11 @@ static void boot_button_timer_cb(TimerHandle_t timer)
         if (press_duration >= BUTTON_WIFI_RESET_MS && press_duration < BUTTON_FACTORY_RESET_MS) {
             ESP_LOGI(TAG, "WiFi reset triggered");
             rgb_led_set_status(LED_STATUS_ERROR);
-            app_wifi_reset();
+
+            /* Notify reset handler task instead of calling app_wifi_reset() directly */
+            if (reset_handler_task_handle != NULL) {
+                xTaskNotify(reset_handler_task_handle, RESET_TASK_WIFI_RESET, eSetBits);
+            }
         }
 
         xTimerStop(timer, 0);
@@ -834,6 +852,21 @@ static void IRAM_ATTR boot_button_isr_handler(void *arg)
 
 static void init_boot_button(void)
 {
+    /* Create reset handler task first */
+    BaseType_t ret = xTaskCreate(
+        reset_handler_task,
+        "reset_handler",
+        4096,               /* Stack size */
+        NULL,               /* Parameters */
+        5,                  /* Priority */
+        &reset_handler_task_handle
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create reset handler task");
+        return;
+    }
+
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << GPIO_BOOT_BUTTON),
         .mode = GPIO_MODE_INPUT,
@@ -876,9 +909,6 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    /* Initialize event loop */
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
     /* Initialize RGB LED */
     rgb_led_config_t led_config = {
         .gpio_num = GPIO_RGB_LED,
@@ -886,7 +916,7 @@ void app_main(void)
         .rmt_channel = RGB_LED_RMT_CHANNEL
     };
     ESP_ERROR_CHECK(rgb_led_init(&led_config));
-    rgb_led_set_status(LED_STATUS_IDLE);
+    rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
 
     /* Initialize IR control */
     ESP_LOGI(TAG, "Initializing IR control...");
@@ -912,10 +942,14 @@ void app_main(void)
     /* Initialize boot button */
     init_boot_button();
 
-    /* Initialize WiFi (before RainMaker) */
+    /* Initialize TCP/IP stack and event loop */
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* Initialize WiFi */
     app_wifi_init();
 
-    /* Register IP event handler BEFORE WiFi start */
+    /* Register IP event handler */
     ESP_LOGI(TAG, "Registering IP event handler...");
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                 &ip_event_handler, NULL));
@@ -923,7 +957,7 @@ void app_main(void)
     /* Initialize RainMaker node (but DON'T create devices yet) */
     ESP_LOGI(TAG, "Initializing ESP RainMaker node...");
     esp_rmaker_config_t rainmaker_cfg = {
-        .enable_time_sync = true,  // RainMaker will handle SNTP automatically after IP
+        .enable_time_sync = true,  // RainMaker will handle SNTP automatically
     };
     rainmaker_node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
     if (!rainmaker_node) {
@@ -934,10 +968,15 @@ void app_main(void)
     /* DO NOT create devices here - they will be created after IP_EVENT_STA_GOT_IP */
     ESP_LOGI(TAG, "RainMaker node initialized (devices will be created after IP acquired)");
 
-    /* NOTE: esp_rmaker_start() will be called AFTER IP acquisition in ip_event_handler() */
-    /* NOTE: OTA, schedule and timezone services are enabled AFTER IP acquisition in ip_event_handler() */
+    /* Start RainMaker EARLY - BEFORE provisioning (OFFICIAL PATTERN) */
+    ESP_LOGI(TAG, "Starting ESP RainMaker...");
+    ESP_ERROR_CHECK(esp_rmaker_start());
 
-    /* Start WiFi provisioning - this will trigger IP_EVENT_STA_GOT_IP which starts RainMaker and creates devices */
+    /* Enable local control for direct LAN access */
+    esp_rmaker_local_ctrl_enable(true);
+    ESP_LOGI(TAG, "Local control enabled");
+
+    /* Start WiFi provisioning - AFTER RainMaker is started */
     ESP_LOGI(TAG, "Starting WiFi provisioning...");
     app_wifi_start(POP_TYPE_RANDOM);
 
