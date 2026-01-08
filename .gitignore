@@ -1,22 +1,8 @@
 # ESP-IDF Build System
 build/
-sdkconfig
 sdkconfig.old
-sdkconfig.defaults.old
 *.pyc
-
-# Dependencies
-dependencies.lock
-dependencies/
-managed_components/
-
-# IDE and Editor Files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
+__pycache__/
 
 # CMake
 CMakeLists.txt.user
@@ -32,49 +18,51 @@ CTestTestfile.cmake
 _deps/
 CMakeUserPresets.json
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.Python
-env/
+# Dependencies
+dependencies.lock
+managed_components/
+
+# Python Virtual Environment
 venv/
 .venv/
+env/
+ENV/
 
-# Backup files
-*.bak
-*.old
-*.backup
-*~
+# IDE - VSCode
+.vscode/
+*.code-workspace
+
+# IDE - Eclipse
+.cproject
+.project
+.settings/
+
+# IDE - CLion
+.idea/
+cmake-build-*/
 
 # OS Files
-Thumbs.db
 .DS_Store
-Desktop.ini
+Thumbs.db
+*.swp
+*.swo
+*~
 
 # Logs
 *.log
-log/
 
 # Temporary files
 *.tmp
-*.temp
+*.bak
+*.backup
 
-# Flash downloads (optional - uncomment if you don't want to track these)
-# *.bin
-# *.elf
-# *.map
+# Flash download tool cache
+.espressif/
 
-# Partition table generated files (keep source CSV)
-# partition_table/
-
-# Keep documentation and source files
-!*.md
-!*.c
-!*.h
-!*.cpp
-!*.hpp
-!*.csv
-!*.txt
-!CMakeLists.txt
-nul
+# Project specific
+*.bin
+*.elf
+*.map
+managed_components/espressif__esp_rainmaker/.component_hash
+/managed_components
+/managed_components
