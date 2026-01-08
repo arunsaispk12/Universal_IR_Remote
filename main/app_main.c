@@ -750,7 +750,7 @@ static esp_err_t create_custom_device(esp_rmaker_node_t *node)
 }
 
 /* ============================================================================
- * IP EVENT HANDLER - Create devices after getting IP
+ * IP EVENT HANDLER - Just for logging (devices created in app_main)
  * ============================================================================ */
 
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
@@ -760,25 +760,8 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
 
-        /* Create RainMaker devices NOW (after IP acquired) */
-        if (!devices_created && rainmaker_node != NULL) {
-            ESP_LOGI(TAG, "Creating RainMaker devices (post-IP)...");
-
-            /* Enable time-dependent services AFTER IP (before device creation) */
-            esp_rmaker_schedule_enable();
-            esp_rmaker_timezone_service_enable();
-
-            ESP_ERROR_CHECK(create_tv_device(rainmaker_node));
-            ESP_ERROR_CHECK(create_ac_device(rainmaker_node));
-            ESP_ERROR_CHECK(create_stb_device(rainmaker_node));
-            ESP_ERROR_CHECK(create_speaker_device(rainmaker_node));
-            ESP_ERROR_CHECK(create_fan_device(rainmaker_node));
-            ESP_ERROR_CHECK(create_custom_device(rainmaker_node));
-
-            devices_created = true;
-
-            ESP_LOGI(TAG, "All RainMaker devices created successfully");
-        }
+        /* Update LED status to connected */
+        rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
     }
 }
 
@@ -954,7 +937,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                 &ip_event_handler, NULL));
 
-    /* Initialize RainMaker node (but DON'T create devices yet) */
+    /* Initialize RainMaker node */
     ESP_LOGI(TAG, "Initializing ESP RainMaker node...");
     esp_rmaker_config_t rainmaker_cfg = {
         .enable_time_sync = true,  // RainMaker will handle SNTP automatically
@@ -965,16 +948,32 @@ void app_main(void)
         abort();
     }
 
-    /* DO NOT create devices here - they will be created after IP_EVENT_STA_GOT_IP */
-    ESP_LOGI(TAG, "RainMaker node initialized (devices will be created after IP acquired)");
+    /* Create ALL devices BEFORE starting RainMaker (OFFICIAL PATTERN) */
+    ESP_LOGI(TAG, "Creating RainMaker devices...");
+    ESP_ERROR_CHECK(create_tv_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_ac_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_stb_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_speaker_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_fan_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_custom_device(rainmaker_node));
+    devices_created = true;
+    ESP_LOGI(TAG, "All RainMaker devices created");
 
-    /* Start RainMaker EARLY - BEFORE provisioning (OFFICIAL PATTERN) */
+    /* Enable OTA */
+    esp_rmaker_ota_enable_default();
+
+    /* Enable timezone service */
+    esp_rmaker_timezone_service_enable();
+
+    /* Enable scheduling */
+    esp_rmaker_schedule_enable();
+
+    /* Start RainMaker - BEFORE WiFi provisioning (OFFICIAL PATTERN) */
     ESP_LOGI(TAG, "Starting ESP RainMaker...");
     ESP_ERROR_CHECK(esp_rmaker_start());
 
-    /* Enable local control for direct LAN access */
-    esp_rmaker_local_ctrl_enable(true);
-    ESP_LOGI(TAG, "Local control enabled");
+    /* Local control is auto-enabled by RainMaker - do NOT call manually */
+    ESP_LOGI(TAG, "Local control will be auto-enabled by RainMaker");
 
     /* Start WiFi provisioning - AFTER RainMaker is started */
     ESP_LOGI(TAG, "Starting WiFi provisioning...");
@@ -985,8 +984,11 @@ void app_main(void)
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  Universal IR Remote Ready!");
-    ESP_LOGI(TAG, "  Waiting for IP address...");
-    ESP_LOGI(TAG, "  Devices will be created after WiFi connection");
+    ESP_LOGI(TAG, "  Use RainMaker app to provision and control");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Use RainMaker app to provision and control");
+
+    /* Main task idle loop to keep task alive */
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

@@ -34,6 +34,8 @@ ESP_EVENT_DEFINE_BASE(APP_WIFI_EVENT);
 
 /* WiFi state */
 static bool wifi_connected = false;
+static EventGroupHandle_t wifi_event_group;
+static const int WIFI_CONNECTED_BIT = BIT0;
 
 /**
  * @brief Event handler for provisioning and WiFi events
@@ -85,6 +87,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
             case WIFI_EVENT_STA_DISCONNECTED:
                 ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
                 wifi_connected = false;
+                xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
                 rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
                 esp_event_post(APP_WIFI_EVENT, APP_WIFI_EVENT_STA_DISCONNECTED, NULL, 0, portMAX_DELAY);
                 esp_wifi_connect();
@@ -98,6 +101,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
                 ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
                 wifi_connected = true;
+                xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
                 rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
                 esp_event_post(APP_WIFI_EVENT, APP_WIFI_EVENT_STA_CONNECTED, NULL, 0, portMAX_DELAY);
                 break;
@@ -111,11 +115,18 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 /**
  * @brief Initialize WiFi (Official RainMaker Pattern)
  *
- * This ONLY initializes WiFi, does NOT start it.
- * RainMaker will start WiFi internally.
+ * Initializes WiFi and STARTS it immediately.
+ * WiFi will auto-connect if credentials are saved.
  */
 esp_err_t app_wifi_init(void)
 {
+    /* Create event group */
+    wifi_event_group = xEventGroupCreate();
+    if (wifi_event_group == NULL) {
+        ESP_LOGE(TAG, "Failed to create event group");
+        return ESP_FAIL;
+    }
+
     /* Register our event handler for Wi-Fi, IP and Provisioning related events */
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
@@ -142,8 +153,8 @@ esp_err_t app_wifi_init(void)
  *
  * IMPORTANT:
  * - This must be called AFTER esp_rmaker_start()
- * - If already provisioned, provisioning manager is deinited but WiFi is NOT started manually
- * - RainMaker handles WiFi start internally in both cases
+ * - If already provisioned, provisioning manager is deinited (WiFi already running)
+ * - If NOT provisioned, starts BLE provisioning service
  */
 esp_err_t app_wifi_start(pop_type_t pop_type)
 {
@@ -224,7 +235,9 @@ esp_err_t app_wifi_start(pop_type_t pop_type)
         wifi_prov_mgr_deinit();
 
         /* WiFi was already started in app_wifi_init() */
-        /* Connection will happen automatically via WIFI_EVENT_STA_START event */
+        /* Wait for connection to complete */
+        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
+                           false, true, portMAX_DELAY);
     }
 
     return ESP_OK;
