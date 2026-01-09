@@ -272,6 +272,21 @@ static esp_err_t __attribute__((unused)) action_learning_success_cb(ir_button_t 
     return err;
 }
 
+esp_err_t ir_action_cancel_learning(void)
+{
+    if (!is_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Reset learning state */
+    is_learning_active = false;
+    learning_device = IR_DEVICE_NONE;
+    learning_action = IR_ACTION_NONE;
+
+    ESP_LOGI(TAG, "Learning cancelled");
+    return ESP_OK;
+}
+
 /* ============================================================================
  * ACTION EXECUTION
  * ============================================================================ */

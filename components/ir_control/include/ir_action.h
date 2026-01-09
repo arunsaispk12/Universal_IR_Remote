@@ -219,6 +219,15 @@ esp_err_t ir_action_init(void);
 esp_err_t ir_action_learn(ir_device_type_t device, ir_action_t action, uint32_t timeout_ms);
 
 /**
+ * @brief Cancel ongoing learning operation
+ *
+ * Resets the learning state. Call this when learning fails or times out.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t ir_action_cancel_learning(void);
+
+/**
  * @brief Execute a learned action (transmit IR code)
  *
  * Looks up the stored IR code for the given device+action and transmits it.

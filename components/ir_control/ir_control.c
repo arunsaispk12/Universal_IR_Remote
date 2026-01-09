@@ -141,7 +141,39 @@ static const char* button_names[IR_BTN_MAX] = {
 };
 
 static const char* protocol_names[] = {
-    "UNKNOWN", "NEC", "SAMSUNG", "RAW"
+    [IR_PROTOCOL_UNKNOWN] = "UNKNOWN",
+    [IR_PROTOCOL_NEC] = "NEC",
+    [IR_PROTOCOL_SAMSUNG] = "SAMSUNG",
+    [IR_PROTOCOL_SONY] = "SONY",
+    [IR_PROTOCOL_JVC] = "JVC",
+    [IR_PROTOCOL_RC5] = "RC5",
+    [IR_PROTOCOL_RC6] = "RC6",
+    [IR_PROTOCOL_LG] = "LG",
+    [IR_PROTOCOL_DENON] = "DENON",
+    [IR_PROTOCOL_SHARP] = "SHARP",
+    [IR_PROTOCOL_PANASONIC] = "PANASONIC",
+    [IR_PROTOCOL_KASEIKYO] = "KASEIKYO",
+    [IR_PROTOCOL_APPLE] = "APPLE",
+    [IR_PROTOCOL_ONKYO] = "ONKYO",
+    [IR_PROTOCOL_SAMSUNG48] = "SAMSUNG48",
+    [IR_PROTOCOL_SAMSUNGLG] = "SAMSUNGLG",
+    [IR_PROTOCOL_LG2] = "LG2",
+    [IR_PROTOCOL_MITSUBISHI] = "MITSUBISHI",
+    [IR_PROTOCOL_DAIKIN] = "DAIKIN",
+    [IR_PROTOCOL_FUJITSU] = "FUJITSU",
+    [IR_PROTOCOL_HAIER] = "HAIER",
+    [IR_PROTOCOL_MIDEA] = "MIDEA",
+    [IR_PROTOCOL_CARRIER] = "CARRIER",
+    [IR_PROTOCOL_HITACHI] = "HITACHI",
+    [IR_PROTOCOL_WHYNTER] = "WHYNTER",
+    [IR_PROTOCOL_LEGO_PF] = "LEGO_PF",
+    [IR_PROTOCOL_MAGIQUEST] = "MAGIQUEST",
+    [IR_PROTOCOL_BOSEWAVE] = "BOSEWAVE",
+    [IR_PROTOCOL_BANG_OLUFSEN] = "BANG_OLUFSEN",
+    [IR_PROTOCOL_FAST] = "FAST",
+    [IR_PROTOCOL_PULSE_DISTANCE] = "PULSE_DISTANCE",
+    [IR_PROTOCOL_PULSE_WIDTH] = "PULSE_WIDTH",
+    [IR_PROTOCOL_RAW] = "RAW"
 };
 
 /* ============================================================================
@@ -1571,20 +1603,24 @@ esp_err_t ir_transmit(ir_code_t *code)
                 ESP_LOGE(TAG, "Samsung transmission error: %s", esp_err_to_name(ret));
             }
         }
-    } else if (code->protocol == IR_PROTOCOL_RAW && code->raw_data != NULL) {
+    } else if (code->raw_data != NULL) {
+        // Use raw transmission for any protocol with raw_data (includes AC protocols)
         rmt_symbol_word_t *raw_symbols = (rmt_symbol_word_t *)code->raw_data;
         size_t num_symbols = code->raw_length;
 
-        ESP_LOGI(TAG, "Transmitting RAW IR code (%d symbols)", num_symbols);
+        ESP_LOGI(TAG, "Transmitting %s IR code (%d symbols)",
+                 ir_get_protocol_name(code->protocol), num_symbols);
 
         ret = rmt_transmit(tx_channel, copy_encoder, raw_symbols,
                           num_symbols * sizeof(rmt_symbol_word_t), &tx_config);
         if (ret == ESP_OK) {
             ret = rmt_tx_wait_all_done(tx_channel, 1000);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "Transmitted RAW code (%d symbols)", num_symbols);
+                ESP_LOGI(TAG, "✓ Transmitted %s code (%d symbols, %d bits)",
+                         ir_get_protocol_name(code->protocol), num_symbols, code->bits);
             } else {
-                ESP_LOGE(TAG, "RAW transmission error: %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "%s transmission error: %s",
+                         ir_get_protocol_name(code->protocol), esp_err_to_name(ret));
             }
         }
     } else {

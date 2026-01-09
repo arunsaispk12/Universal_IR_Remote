@@ -525,6 +525,11 @@ esp_err_t ir_ac_encode_mitsubishi(const ac_state_t *state, ir_code_t *code)
     ESP_LOGI(TAG, "Mitsubishi: Power=%s, Mode=%d, Temp=%d°C, Fan=%d",
              state->power ? "ON" : "OFF", state->mode, state->temperature, state->fan_speed);
 
+    // Log hex bytes for verification
+    ESP_LOGI(TAG, "Mitsubishi Frame: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+             data[9], data[10], data[11], data[12], data[13], data[14], data[15], data[16], data[17], data[18]);
+
     return ESP_OK;
 }
 

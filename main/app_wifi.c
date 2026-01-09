@@ -47,7 +47,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         switch (event_id) {
             case WIFI_PROV_START:
                 ESP_LOGI(TAG, "Provisioning started");
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
+                rgb_led_set_mode(LED_MODE_WIFI_CONNECTING);
                 break;
             case WIFI_PROV_CRED_RECV: {
                 wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
@@ -63,7 +63,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                          "\n\tPlease reset to factory and retry provisioning",
                          (*reason == WIFI_PROV_STA_AUTH_ERROR) ?
                          "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
-                rgb_led_set_status(LED_STATUS_ERROR);
+                rgb_led_set_mode(LED_MODE_WIFI_ERROR);
                 break;
             }
             case WIFI_PROV_CRED_SUCCESS:
@@ -81,14 +81,14 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         switch (event_id) {
             case WIFI_EVENT_STA_START:
                 ESP_LOGI(TAG, "WiFi station started, connecting...");
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
+                rgb_led_set_mode(LED_MODE_WIFI_CONNECTING);
                 esp_wifi_connect();
                 break;
             case WIFI_EVENT_STA_DISCONNECTED:
                 ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
                 wifi_connected = false;
                 xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTING);
+                rgb_led_set_mode(LED_MODE_WIFI_CONNECTING);
                 esp_event_post(APP_WIFI_EVENT, APP_WIFI_EVENT_STA_DISCONNECTED, NULL, 0, portMAX_DELAY);
                 esp_wifi_connect();
                 break;
@@ -102,7 +102,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
                 wifi_connected = true;
                 xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
+                rgb_led_set_mode(LED_MODE_WIFI_CONNECTED);
                 esp_event_post(APP_WIFI_EVENT, APP_WIFI_EVENT_STA_CONNECTED, NULL, 0, portMAX_DELAY);
                 break;
             }
@@ -235,9 +235,7 @@ esp_err_t app_wifi_start(pop_type_t pop_type)
         wifi_prov_mgr_deinit();
 
         /* WiFi was already started in app_wifi_init() */
-        /* Wait for connection to complete */
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
-                           false, true, portMAX_DELAY);
+        /* Connection will happen asynchronously via event handlers */
     }
 
     return ESP_OK;
