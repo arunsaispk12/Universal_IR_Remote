@@ -22,6 +22,20 @@ esp_err_t ir_decode_jvc(const rmt_symbol_word_t *symbols,
     bool has_header = false;
     size_t data_start = 0;
 
+    // Reject NEC-like headers (9000us + 4500us) - these should be decoded by NEC decoder
+    // This prevents false JVC matches on NEC signals
+    if (num_symbols > 16) {
+        uint16_t first_mark = symbols[0].duration0;
+        uint16_t first_space = symbols[0].duration1;
+
+        // Check if this looks like NEC header (9000us +/- 25%, 4500us +/- 25%)
+        if (first_mark > 6750 && first_mark < 11250 &&  // 9000 +/- 25%
+            first_space > 3375 && first_space < 5625) {  // 4500 +/- 25%
+            ESP_LOGD(TAG, "Rejecting NEC-like header: %uus + %uus", first_mark, first_space);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+
     // Check for header (8400us mark + 4200us space)
     if (num_symbols >= 17) {
         if (ir_match_mark(&symbols[0], JVC_HEADER_MARK, 0) &&
@@ -35,6 +49,20 @@ esp_err_t ir_decode_jvc(const rmt_symbol_word_t *symbols,
     size_t expected_symbols = has_header ? 17 : 16;
     if (num_symbols < expected_symbols) {
         ESP_LOGD(TAG, "Invalid symbol count: %zu", num_symbols);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Reject if symbol count is too high (likely NEC or other protocol)
+    // JVC should have exactly 16 (repeat) or 17 (with header) symbols
+    if (num_symbols > expected_symbols + 2) {  // Allow 2 symbols tolerance for trailing pulses
+        ESP_LOGD(TAG, "Too many symbols for JVC: %zu (expected %zu)", num_symbols, expected_symbols);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Additional validation: If we don't have a header, require that this looks like a repeat
+    // Reject signals without header that have too many symbols (likely not JVC repeat)
+    if (!has_header && num_symbols > 18) {
+        ESP_LOGD(TAG, "Headerless signal with too many symbols: %zu (likely not JVC repeat)", num_symbols);
         return ESP_ERR_INVALID_ARG;
     }
 
