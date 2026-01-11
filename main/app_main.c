@@ -65,11 +65,17 @@ static esp_rmaker_device_t *stb_device = NULL;
 static esp_rmaker_device_t *speaker_device = NULL;
 static esp_rmaker_device_t *fan_device = NULL;
 static esp_rmaker_device_t *custom_device = NULL;
+static esp_rmaker_device_t *custom_device_2 = NULL;
+static esp_rmaker_device_t *custom_device_3 = NULL;
+
+static esp_rmaker_node_t *rainmaker_node = NULL;
+static bool devices_created = false;
 
 /* Boot button handling */
 static TimerHandle_t boot_button_timer = NULL;
 static uint32_t button_press_start = 0;
 static bool factory_reset_triggered = false;
+static TaskHandle_t reset_handler_task_handle = NULL;
 
 /* Learning state */
 typedef struct {
@@ -101,10 +107,10 @@ static void ir_learn_success_callback(ir_button_t button, ir_code_t *code, void 
     /* Save code to NVS using action mapping */
     if (ir_action_save(learning_state.device, learning_state.action, code) == ESP_OK) {
         ESP_LOGI(TAG, "IR code saved to NVS");
-        rgb_led_set_status(LED_STATUS_LEARN_SUCCESS);
+        rgb_led_set_mode(LED_MODE_IR_LEARNING_SUCCESS);
     } else {
         ESP_LOGE(TAG, "Failed to save IR code");
-        rgb_led_set_status(LED_STATUS_ERROR);
+        rgb_led_set_mode(LED_MODE_WIFI_ERROR);
     }
 
     vTaskDelay(pdMS_TO_TICKS(1500));
@@ -113,12 +119,13 @@ static void ir_learn_success_callback(ir_button_t button, ir_code_t *code, void 
     learning_state.is_active = false;
     learning_state.device = IR_DEVICE_NONE;
     learning_state.action = IR_ACTION_NONE;
+    ir_action_cancel_learning();  // Reset state in ir_action module
 
     /* Return to connected state */
     if (app_wifi_is_connected()) {
-        rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
+        rgb_led_set_mode(LED_MODE_WIFI_CONNECTED);
     } else {
-        rgb_led_set_status(LED_STATUS_IDLE);
+        rgb_led_set_mode(LED_MODE_OFF);
     }
 }
 
@@ -129,7 +136,10 @@ static void ir_learn_fail_callback(ir_button_t button, void *arg)
 {
     ESP_LOGW(TAG, "IR learning failed (timeout)");
 
-    rgb_led_set_status(LED_STATUS_LEARN_FAILED);
+    /* Cancel learning in action mapper */
+    ir_action_cancel_learning();
+
+    rgb_led_set_mode(LED_MODE_IR_LEARNING_FAILED);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     /* Reset learning state */
@@ -139,9 +149,9 @@ static void ir_learn_fail_callback(ir_button_t button, void *arg)
 
     /* Return to connected state */
     if (app_wifi_is_connected()) {
-        rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
+        rgb_led_set_mode(LED_MODE_WIFI_CONNECTED);
     } else {
-        rgb_led_set_status(LED_STATUS_IDLE);
+        rgb_led_set_mode(LED_MODE_OFF);
     }
 }
 
@@ -158,55 +168,53 @@ static esp_err_t tv_write_cb(const esp_rmaker_device_t *device,
     const char *param_name = esp_rmaker_param_get_name(param);
     ESP_LOGI(TAG, "TV parameter update: %s", param_name);
 
-    /* Power */
-    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
-        bool power = val.val.b;
-        ESP_LOGI(TAG, "TV Power: %s", power ? "ON" : "OFF");
+    /* TRIGGER BUTTONS - Execute IR action immediately when pressed */
+    if (strcmp(param_name, "Power") == 0) {
+        ESP_LOGI(TAG, "TV Power button pressed");
         return ir_action_execute(IR_DEVICE_TV, IR_ACTION_POWER);
     }
-    /* Volume */
-    else if (strcmp(param_name, "Volume") == 0) {
-        int volume = val.val.i;
-        ESP_LOGI(TAG, "TV Volume: %d (use Vol+/Vol- actions)", volume);
-        /* Volume tracking not implemented - parameters are for UI only */
-        return ESP_OK;
+    else if (strcmp(param_name, "Vol_Up") == 0) {
+        ESP_LOGI(TAG, "TV Volume Up button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_VOL_UP);
     }
-    /* Mute */
+    else if (strcmp(param_name, "Vol_Down") == 0) {
+        ESP_LOGI(TAG, "TV Volume Down button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_VOL_DOWN);
+    }
     else if (strcmp(param_name, "Mute") == 0) {
-        bool mute = val.val.b;
-        ESP_LOGI(TAG, "TV Mute: %s", mute ? "ON" : "OFF");
+        ESP_LOGI(TAG, "TV Mute button pressed");
         return ir_action_execute(IR_DEVICE_TV, IR_ACTION_MUTE);
     }
-    /* Channel */
-    else if (strcmp(param_name, "Channel") == 0) {
-        int channel = val.val.i;
-        ESP_LOGI(TAG, "TV Channel: %d (use Ch+/Ch- actions)", channel);
-        /* Channel tracking not implemented - parameters are for UI only */
-        return ESP_OK;
+    else if (strcmp(param_name, "Ch_Up") == 0) {
+        ESP_LOGI(TAG, "TV Channel Up button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_CH_UP);
     }
-    /* Input Source */
+    else if (strcmp(param_name, "Ch_Down") == 0) {
+        ESP_LOGI(TAG, "TV Channel Down button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_CH_DOWN);
+    }
     else if (strcmp(param_name, "Input") == 0) {
-        const char *input = val.val.s;
-        ESP_LOGI(TAG, "TV Input: %s", input);
-
-        if (strcmp(input, "HDMI1") == 0) {
-            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI1);
-        } else if (strcmp(input, "HDMI2") == 0) {
-            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI2);
-        } else if (strcmp(input, "HDMI3") == 0) {
-            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_HDMI3);
-        } else if (strcmp(input, "AV") == 0) {
-            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT_AV);
-        } else {
-            return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT);
-        }
+        ESP_LOGI(TAG, "TV Input button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_TV_INPUT);
     }
-    /* Learn Mode */
+    else if (strcmp(param_name, "Menu") == 0) {
+        ESP_LOGI(TAG, "TV Menu button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_MENU);
+    }
+    else if (strcmp(param_name, "OK") == 0) {
+        ESP_LOGI(TAG, "TV OK button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_NAV_OK);
+    }
+    else if (strcmp(param_name, "Back") == 0) {
+        ESP_LOGI(TAG, "TV Back button pressed");
+        return ir_action_execute(IR_DEVICE_TV, IR_ACTION_BACK);
+    }
+    /* Learn Mode - Dropdown selection */
     else if (strcmp(param_name, "Learn_Mode") == 0) {
         const char *action_name = val.val.s;
         ESP_LOGI(TAG, "TV Learn Mode: %s", action_name);
 
-        /* Map action name to ir_action_t */
+        /* Map dropdown selection to ir_action_t */
         ir_action_t action = IR_ACTION_NONE;
         if (strcmp(action_name, "Power") == 0) action = IR_ACTION_POWER;
         else if (strcmp(action_name, "VolumeUp") == 0) action = IR_ACTION_VOL_UP;
@@ -228,8 +236,8 @@ static esp_err_t tv_write_cb(const esp_rmaker_device_t *device,
         learning_state.action = action;
         learning_state.is_active = true;
 
-        rgb_led_set_status(LED_STATUS_LEARNING);
-        return ir_learn_start(IR_BTN_CUSTOM_1, IR_LEARNING_TIMEOUT_MS);
+        rgb_led_set_mode(LED_MODE_IR_LEARNING);
+        return ir_action_learn(IR_DEVICE_TV, action, IR_LEARNING_TIMEOUT_MS);
     }
 
     return ESP_OK;
@@ -302,25 +310,25 @@ static esp_err_t ac_write_cb(const esp_rmaker_device_t *device,
         /* Auto-detect mode - trigger AC learning */
         if (strcmp(protocol_str, "Auto-Detect") == 0) {
             ESP_LOGI(TAG, "Starting AC protocol auto-detection...");
-            rgb_led_set_status(LED_STATUS_LEARNING);
+            rgb_led_set_mode(LED_MODE_IR_LEARNING);
 
             esp_err_t err = ir_ac_learn_protocol(IR_LEARNING_TIMEOUT_MS);
 
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "AC protocol learned successfully!");
-                rgb_led_set_status(LED_STATUS_LEARN_SUCCESS);
+                rgb_led_set_mode(LED_MODE_IR_LEARNING_SUCCESS);
                 vTaskDelay(pdMS_TO_TICKS(1500));
             } else {
                 ESP_LOGE(TAG, "AC protocol learning failed: %s", esp_err_to_name(err));
-                rgb_led_set_status(LED_STATUS_LEARN_FAILED);
+                rgb_led_set_mode(LED_MODE_IR_LEARNING_FAILED);
                 vTaskDelay(pdMS_TO_TICKS(1500));
             }
 
             /* Return to connected state */
             if (app_wifi_is_connected()) {
-                rgb_led_set_status(LED_STATUS_WIFI_CONNECTED);
+                rgb_led_set_mode(LED_MODE_WIFI_CONNECTED);
             } else {
-                rgb_led_set_status(LED_STATUS_IDLE);
+                rgb_led_set_mode(LED_MODE_OFF);
             }
 
             return err;
@@ -340,6 +348,8 @@ static esp_err_t ac_write_cb(const esp_rmaker_device_t *device,
         else if (strcmp(protocol_str, "Panasonic") == 0) protocol = IR_PROTOCOL_PANASONIC;
         else if (strcmp(protocol_str, "Fujitsu") == 0) protocol = IR_PROTOCOL_FUJITSU;
         else if (strcmp(protocol_str, "LG2") == 0) protocol = IR_PROTOCOL_LG2;
+        else if (strcmp(protocol_str, "Samsung") == 0) protocol = IR_PROTOCOL_SAMSUNG48;
+        else if (strcmp(protocol_str, "LG") == 0) protocol = IR_PROTOCOL_LG2;
 
         if (protocol != IR_PROTOCOL_UNKNOWN) {
             esp_err_t err = ir_ac_set_protocol(protocol, 0);
@@ -369,15 +379,46 @@ static esp_err_t speaker_write_cb(const esp_rmaker_device_t *device,
     const char *param_name = esp_rmaker_param_get_name(param);
     ESP_LOGI(TAG, "Speaker parameter update: %s", param_name);
 
-    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+    /* TRIGGER BUTTONS - Execute IR action immediately when pressed */
+    if (strcmp(param_name, "Power") == 0) {
+        ESP_LOGI(TAG, "Soundbar Power button pressed");
         return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_POWER);
-    } else if (strcmp(param_name, "Volume") == 0) {
-        int volume = val.val.i;
-        ESP_LOGI(TAG, "Speaker Volume: %d (use Vol+/Vol- actions)", volume);
-        /* Volume tracking not implemented */
-        return ESP_OK;
-    } else if (strcmp(param_name, "Mute") == 0) {
+    }
+    else if (strcmp(param_name, "Vol_Up") == 0) {
+        ESP_LOGI(TAG, "Soundbar Volume Up button pressed");
+        return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_VOL_UP);
+    }
+    else if (strcmp(param_name, "Vol_Down") == 0) {
+        ESP_LOGI(TAG, "Soundbar Volume Down button pressed");
+        return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_VOL_DOWN);
+    }
+    else if (strcmp(param_name, "Mute") == 0) {
+        ESP_LOGI(TAG, "Soundbar Mute button pressed");
         return ir_action_execute(IR_DEVICE_SPEAKER, IR_ACTION_MUTE);
+    }
+    /* Learn Mode - Dropdown selection */
+    else if (strcmp(param_name, "Learn_Mode") == 0) {
+        const char *action_name = val.val.s;
+        ESP_LOGI(TAG, "Soundbar Learn Mode: %s", action_name);
+
+        /* Map dropdown selection to ir_action_t */
+        ir_action_t action = IR_ACTION_NONE;
+        if (strcmp(action_name, "Power") == 0) action = IR_ACTION_POWER;
+        else if (strcmp(action_name, "VolumeUp") == 0) action = IR_ACTION_VOL_UP;
+        else if (strcmp(action_name, "VolumeDown") == 0) action = IR_ACTION_VOL_DOWN;
+        else if (strcmp(action_name, "Mute") == 0) action = IR_ACTION_MUTE;
+        else {
+            ESP_LOGW(TAG, "Unknown action: %s", action_name);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        /* Start learning */
+        learning_state.device = IR_DEVICE_SPEAKER;
+        learning_state.action = action;
+        learning_state.is_active = true;
+
+        rgb_led_set_mode(LED_MODE_IR_LEARNING);
+        return ir_action_learn(IR_DEVICE_SPEAKER, action, IR_LEARNING_TIMEOUT_MS);
     }
 
     return ESP_OK;
@@ -434,17 +475,66 @@ static esp_err_t stb_write_cb(const esp_rmaker_device_t *device,
     const char *param_name = esp_rmaker_param_get_name(param);
     ESP_LOGI(TAG, "STB parameter update: %s", param_name);
 
-    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+    /* TRIGGER BUTTONS - Execute IR action immediately when pressed */
+    if (strcmp(param_name, "Power") == 0) {
+        ESP_LOGI(TAG, "STB Power button pressed");
         return ir_action_execute(IR_DEVICE_STB, IR_ACTION_POWER);
-    } else if (strcmp(param_name, "Channel") == 0) {
-        int channel = val.val.i;
-        ESP_LOGI(TAG, "STB Channel: %d (use Ch+/Ch- actions)", channel);
-        /* Channel tracking not implemented */
-        return ESP_OK;
-    } else if (strcmp(param_name, "Play_Pause") == 0) {
+    }
+    else if (strcmp(param_name, "Ch_Up") == 0) {
+        ESP_LOGI(TAG, "STB Channel Up button pressed");
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_CH_UP);
+    }
+    else if (strcmp(param_name, "Ch_Down") == 0) {
+        ESP_LOGI(TAG, "STB Channel Down button pressed");
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_CH_DOWN);
+    }
+    else if (strcmp(param_name, "Play_Pause") == 0) {
+        ESP_LOGI(TAG, "STB Play/Pause button pressed");
         return ir_action_execute(IR_DEVICE_STB, IR_ACTION_STB_PLAY_PAUSE);
-    } else if (strcmp(param_name, "Guide") == 0) {
+    }
+    else if (strcmp(param_name, "Guide") == 0) {
+        ESP_LOGI(TAG, "STB Guide button pressed");
         return ir_action_execute(IR_DEVICE_STB, IR_ACTION_STB_GUIDE);
+    }
+    else if (strcmp(param_name, "Menu") == 0) {
+        ESP_LOGI(TAG, "STB Menu button pressed");
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_MENU);
+    }
+    else if (strcmp(param_name, "OK") == 0) {
+        ESP_LOGI(TAG, "STB OK button pressed");
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_NAV_OK);
+    }
+    else if (strcmp(param_name, "Back") == 0) {
+        ESP_LOGI(TAG, "STB Back button pressed");
+        return ir_action_execute(IR_DEVICE_STB, IR_ACTION_BACK);
+    }
+    /* Learn Mode - Dropdown selection */
+    else if (strcmp(param_name, "Learn_Mode") == 0) {
+        const char *action_name = val.val.s;
+        ESP_LOGI(TAG, "STB Learn Mode: %s", action_name);
+
+        /* Map dropdown selection to ir_action_t */
+        ir_action_t action = IR_ACTION_NONE;
+        if (strcmp(action_name, "Power") == 0) action = IR_ACTION_POWER;
+        else if (strcmp(action_name, "ChannelUp") == 0) action = IR_ACTION_CH_UP;
+        else if (strcmp(action_name, "ChannelDown") == 0) action = IR_ACTION_CH_DOWN;
+        else if (strcmp(action_name, "PlayPause") == 0) action = IR_ACTION_STB_PLAY_PAUSE;
+        else if (strcmp(action_name, "Guide") == 0) action = IR_ACTION_STB_GUIDE;
+        else if (strcmp(action_name, "Menu") == 0) action = IR_ACTION_MENU;
+        else if (strcmp(action_name, "OK") == 0) action = IR_ACTION_NAV_OK;
+        else if (strcmp(action_name, "Back") == 0) action = IR_ACTION_BACK;
+        else {
+            ESP_LOGW(TAG, "Unknown action: %s", action_name);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        /* Start learning */
+        learning_state.device = IR_DEVICE_STB;
+        learning_state.action = action;
+        learning_state.is_active = true;
+
+        rgb_led_set_mode(LED_MODE_IR_LEARNING);
+        return ir_action_learn(IR_DEVICE_STB, action, IR_LEARNING_TIMEOUT_MS);
     }
 
     return ESP_OK;
@@ -463,11 +553,14 @@ static esp_err_t custom_write_cb(const esp_rmaker_device_t *device,
     const char *param_name = esp_rmaker_param_get_name(param);
     ESP_LOGI(TAG, "Custom device parameter update: %s", param_name);
 
-    if (strcmp(param_name, ESP_RMAKER_DEF_POWER_NAME) == 0) {
+    /* TRIGGER BUTTONS - Execute IR action immediately when pressed */
+    if (strcmp(param_name, "Power") == 0) {
+        ESP_LOGI(TAG, "Custom Power button pressed");
         return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_POWER);
     }
     /* Button 1-12 */
     else if (strcmp(param_name, "Button_1") == 0) {
+        ESP_LOGI(TAG, "Custom Button 1 pressed");
         return ir_action_execute(IR_DEVICE_CUSTOM, IR_ACTION_CUSTOM_1);
     }
     else if (strcmp(param_name, "Button_2") == 0) {
@@ -533,8 +626,8 @@ static esp_err_t custom_write_cb(const esp_rmaker_device_t *device,
         learning_state.action = action;
         learning_state.is_active = true;
 
-        rgb_led_set_status(LED_STATUS_LEARNING);
-        return ir_learn_start(IR_BTN_CUSTOM_1, IR_LEARNING_TIMEOUT_MS);
+        rgb_led_set_mode(LED_MODE_IR_LEARNING);
+        return ir_action_learn(IR_DEVICE_CUSTOM, action, IR_LEARNING_TIMEOUT_MS);
     }
 
     return ESP_OK;
@@ -546,43 +639,78 @@ static esp_err_t custom_write_cb(const esp_rmaker_device_t *device,
 
 static esp_err_t create_tv_device(esp_rmaker_node_t *node)
 {
-    tv_device = esp_rmaker_tv_device_create("TV", NULL, true);
+    /* Create as generic device for full control over UI */
+    tv_device = esp_rmaker_device_create("TV Remote", ESP_RMAKER_DEVICE_OTHER, NULL);
     if (!tv_device) {
         ESP_LOGE(TAG, "Failed to create TV device");
         return ESP_FAIL;
     }
 
     esp_rmaker_device_add_cb(tv_device, tv_write_cb, NULL);
+    esp_rmaker_device_add_param(tv_device, esp_rmaker_name_param_create("Name", "TV Remote"));
 
-    /* Add TV-specific parameters */
-    esp_rmaker_device_add_param(tv_device, esp_rmaker_name_param_create("Name", "TV"));
+    /* Remote control buttons - all as TRIGGERS (momentary push buttons) */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, power_btn);
 
-    esp_rmaker_param_t *volume = esp_rmaker_param_create("Volume", "esp.param.range",
-                                                           esp_rmaker_int(50), PROP_FLAG_READ | PROP_FLAG_WRITE);
-    esp_rmaker_param_add_bounds(volume, esp_rmaker_int(0), esp_rmaker_int(100), esp_rmaker_int(1));
-    esp_rmaker_device_add_param(tv_device, volume);
+    esp_rmaker_param_t *vol_up_btn = esp_rmaker_param_create("Vol_Up", "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(vol_up_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, vol_up_btn);
 
-    esp_rmaker_param_t *mute = esp_rmaker_param_create("Mute", "esp.param.toggle",
-                                                         esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
-    esp_rmaker_device_add_param(tv_device, mute);
+    esp_rmaker_param_t *vol_down_btn = esp_rmaker_param_create("Vol_Down", "esp.param.toggle",
+                                                                 esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(vol_down_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, vol_down_btn);
 
-    esp_rmaker_param_t *channel = esp_rmaker_param_create("Channel", "esp.param.range",
-                                                            esp_rmaker_int(1), PROP_FLAG_READ | PROP_FLAG_WRITE);
-    esp_rmaker_param_add_bounds(channel, esp_rmaker_int(1), esp_rmaker_int(999), esp_rmaker_int(1));
-    esp_rmaker_device_add_param(tv_device, channel);
+    esp_rmaker_param_t *mute_btn = esp_rmaker_param_create("Mute", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(mute_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, mute_btn);
 
-    esp_rmaker_param_t *input = esp_rmaker_param_create("Input", "esp.param.string",
-                                                          esp_rmaker_str("HDMI1"), PROP_FLAG_READ | PROP_FLAG_WRITE);
-    esp_rmaker_device_add_param(tv_device, input);
+    esp_rmaker_param_t *ch_up_btn = esp_rmaker_param_create("Ch_Up", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ch_up_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, ch_up_btn);
 
-    /* Learning mode parameter */
+    esp_rmaker_param_t *ch_down_btn = esp_rmaker_param_create("Ch_Down", "esp.param.toggle",
+                                                                esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ch_down_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, ch_down_btn);
+
+    esp_rmaker_param_t *input_btn = esp_rmaker_param_create("Input", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(input_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, input_btn);
+
+    esp_rmaker_param_t *menu_btn = esp_rmaker_param_create("Menu", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(menu_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, menu_btn);
+
+    esp_rmaker_param_t *ok_btn = esp_rmaker_param_create("OK", "esp.param.toggle",
+                                                           esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ok_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, ok_btn);
+
+    esp_rmaker_param_t *back_btn = esp_rmaker_param_create("Back", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(back_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(tv_device, back_btn);
+
+    /* Learning mode dropdown */
     esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
                                                                esp_rmaker_str("None"), PROP_FLAG_WRITE);
     esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *learn_options[] = {"None", "Power", "VolumeUp", "VolumeDown", "Mute",
+                                           "ChannelUp", "ChannelDown", "Input", "Menu", "OK", "Back"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, learn_options, 11);
     esp_rmaker_device_add_param(tv_device, learn_mode);
 
     esp_rmaker_node_add_device(node, tv_device);
-    ESP_LOGI(TAG, "TV device created");
+    ESP_LOGI(TAG, "TV Remote device created with push button controls");
     return ESP_OK;
 }
 
@@ -606,6 +734,8 @@ static esp_err_t create_ac_device(esp_rmaker_node_t *node)
     esp_rmaker_param_t *mode = esp_rmaker_param_create("Mode", "esp.param.mode",
                                                          esp_rmaker_str("Cool"), PROP_FLAG_READ | PROP_FLAG_WRITE);
     esp_rmaker_param_add_ui_type(mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *mode_options[] = {"Off", "Cool", "Heat", "Dry", "Fan", "Auto"};
+    esp_rmaker_param_add_valid_str_list(mode, mode_options, 6);
     esp_rmaker_device_add_param(ac_device, mode);
 
     /* Temperature parameter */
@@ -619,6 +749,8 @@ static esp_err_t create_ac_device(esp_rmaker_node_t *node)
     esp_rmaker_param_t *fan_speed = esp_rmaker_param_create("Fan_Speed", "esp.param.mode",
                                                               esp_rmaker_str("Auto"), PROP_FLAG_READ | PROP_FLAG_WRITE);
     esp_rmaker_param_add_ui_type(fan_speed, ESP_RMAKER_UI_DROPDOWN);
+    static const char *fan_speed_options[] = {"Auto", "Low", "Medium", "High"};
+    esp_rmaker_param_add_valid_str_list(fan_speed, fan_speed_options, 4);
     esp_rmaker_device_add_param(ac_device, fan_speed);
 
     /* Swing parameter */
@@ -630,6 +762,8 @@ static esp_err_t create_ac_device(esp_rmaker_node_t *node)
     esp_rmaker_param_t *learn_protocol = esp_rmaker_param_create("Learn_Protocol", "esp.param.string",
                                                                    esp_rmaker_str("Daikin"), PROP_FLAG_WRITE);
     esp_rmaker_param_add_ui_type(learn_protocol, ESP_RMAKER_UI_DROPDOWN);
+    static const char *protocol_options[] = {"Daikin", "Mitsubishi", "LG", "Samsung", "Panasonic", "Hitachi"};
+    esp_rmaker_param_add_valid_str_list(learn_protocol, protocol_options, 6);
     esp_rmaker_device_add_param(ac_device, learn_protocol);
 
     esp_rmaker_node_add_device(node, ac_device);
@@ -640,17 +774,47 @@ static esp_err_t create_ac_device(esp_rmaker_node_t *node)
 
 static esp_err_t create_speaker_device(esp_rmaker_node_t *node)
 {
-    speaker_device = esp_rmaker_speaker_device_create("Soundbar", NULL, true);
+    /* Create as generic device for full control over UI */
+    speaker_device = esp_rmaker_device_create("Soundbar Remote", ESP_RMAKER_DEVICE_OTHER, NULL);
     if (!speaker_device) {
         ESP_LOGE(TAG, "Failed to create Speaker device");
         return ESP_FAIL;
     }
 
     esp_rmaker_device_add_cb(speaker_device, speaker_write_cb, NULL);
-    esp_rmaker_device_add_param(speaker_device, esp_rmaker_name_param_create("Name", "Soundbar"));
+    esp_rmaker_device_add_param(speaker_device, esp_rmaker_name_param_create("Name", "Soundbar Remote"));
+
+    /* Remote control buttons - all as TRIGGERS (momentary push buttons) */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(speaker_device, power_btn);
+
+    esp_rmaker_param_t *vol_up_btn = esp_rmaker_param_create("Vol_Up", "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(vol_up_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(speaker_device, vol_up_btn);
+
+    esp_rmaker_param_t *vol_down_btn = esp_rmaker_param_create("Vol_Down", "esp.param.toggle",
+                                                                 esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(vol_down_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(speaker_device, vol_down_btn);
+
+    esp_rmaker_param_t *mute_btn = esp_rmaker_param_create("Mute", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(mute_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(speaker_device, mute_btn);
+
+    /* Learning mode dropdown */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *soundbar_learn_options[] = {"None", "Power", "VolumeUp", "VolumeDown", "Mute"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, soundbar_learn_options, 5);
+    esp_rmaker_device_add_param(speaker_device, learn_mode);
 
     esp_rmaker_node_add_device(node, speaker_device);
-    ESP_LOGI(TAG, "Speaker device created");
+    ESP_LOGI(TAG, "Soundbar Remote device created");
     return ESP_OK;
 }
 
@@ -663,7 +827,8 @@ static esp_err_t create_fan_device(esp_rmaker_node_t *node)
     }
 
     esp_rmaker_device_add_cb(fan_device, fan_write_cb, NULL);
-    esp_rmaker_device_add_param(fan_device, esp_rmaker_name_param_create("Name", "Fan"));
+
+    /* Note: Name parameter is automatically added by esp_rmaker_fan_device_create() */
 
     /* Fan speed */
     esp_rmaker_param_t *speed = esp_rmaker_speed_param_create("Speed", 3);
@@ -682,54 +847,99 @@ static esp_err_t create_fan_device(esp_rmaker_node_t *node)
 
 static esp_err_t create_stb_device(esp_rmaker_node_t *node)
 {
-    stb_device = esp_rmaker_device_create("STB", ESP_RMAKER_DEVICE_OTHER, NULL);
+    /* Create as generic device for full control over UI */
+    stb_device = esp_rmaker_device_create("STB Remote", ESP_RMAKER_DEVICE_OTHER, NULL);
     if (!stb_device) {
         ESP_LOGE(TAG, "Failed to create STB device");
         return ESP_FAIL;
     }
 
     esp_rmaker_device_add_cb(stb_device, stb_write_cb, NULL);
-    esp_rmaker_device_add_param(stb_device, esp_rmaker_name_param_create("Name", "Set-Top Box"));
-    esp_rmaker_device_add_param(stb_device, esp_rmaker_power_param_create("Power", false));
+    esp_rmaker_device_add_param(stb_device, esp_rmaker_name_param_create("Name", "STB Remote"));
 
-    /* Channel */
-    esp_rmaker_param_t *channel = esp_rmaker_param_create("Channel", "esp.param.range",
-                                                            esp_rmaker_int(1), PROP_FLAG_READ | PROP_FLAG_WRITE);
-    esp_rmaker_device_add_param(stb_device, channel);
+    /* Remote control buttons - all as TRIGGERS (momentary push buttons) */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, power_btn);
 
-    /* Play/Pause */
-    esp_rmaker_param_t *play_pause = esp_rmaker_param_create("Play_Pause", "esp.param.toggle",
-                                                               esp_rmaker_bool(false), PROP_FLAG_WRITE);
-    esp_rmaker_device_add_param(stb_device, play_pause);
+    esp_rmaker_param_t *ch_up_btn = esp_rmaker_param_create("Ch_Up", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ch_up_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, ch_up_btn);
 
-    /* Guide */
-    esp_rmaker_param_t *guide = esp_rmaker_param_create("Guide", "esp.param.toggle",
-                                                          esp_rmaker_bool(false), PROP_FLAG_WRITE);
-    esp_rmaker_device_add_param(stb_device, guide);
+    esp_rmaker_param_t *ch_down_btn = esp_rmaker_param_create("Ch_Down", "esp.param.toggle",
+                                                                esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ch_down_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, ch_down_btn);
+
+    esp_rmaker_param_t *play_pause_btn = esp_rmaker_param_create("Play_Pause", "esp.param.toggle",
+                                                                   esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(play_pause_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, play_pause_btn);
+
+    esp_rmaker_param_t *guide_btn = esp_rmaker_param_create("Guide", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(guide_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, guide_btn);
+
+    esp_rmaker_param_t *menu_btn = esp_rmaker_param_create("Menu", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(menu_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, menu_btn);
+
+    esp_rmaker_param_t *ok_btn = esp_rmaker_param_create("OK", "esp.param.toggle",
+                                                           esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(ok_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, ok_btn);
+
+    esp_rmaker_param_t *back_btn = esp_rmaker_param_create("Back", "esp.param.toggle",
+                                                             esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(back_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(stb_device, back_btn);
+
+    /* Learning mode dropdown */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *stb_learn_options[] = {"None", "Power", "ChannelUp", "ChannelDown",
+                                               "PlayPause", "Guide", "Menu", "OK", "Back"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, stb_learn_options, 9);
+    esp_rmaker_device_add_param(stb_device, learn_mode);
 
     esp_rmaker_node_add_device(node, stb_device);
-    ESP_LOGI(TAG, "STB device created");
+    ESP_LOGI(TAG, "STB Remote device created");
     return ESP_OK;
 }
 
 static esp_err_t create_custom_device(esp_rmaker_node_t *node)
 {
-    custom_device = esp_rmaker_device_create("Custom", ESP_RMAKER_DEVICE_OTHER, NULL);
+    /* Create as generic device for full control over UI */
+    custom_device = esp_rmaker_device_create("Custom Remote", ESP_RMAKER_DEVICE_OTHER, NULL);
     if (!custom_device) {
         ESP_LOGE(TAG, "Failed to create Custom device");
         return ESP_FAIL;
     }
 
     esp_rmaker_device_add_cb(custom_device, custom_write_cb, NULL);
-    esp_rmaker_device_add_param(custom_device, esp_rmaker_name_param_create("Name", "Custom Device"));
-    esp_rmaker_device_add_param(custom_device, esp_rmaker_power_param_create("Power", false));
+    esp_rmaker_device_add_param(custom_device, esp_rmaker_name_param_create("Name", "Custom Remote"));
 
-    /* Button 1-12 */
-    for (int i = 1; i <= 12; i++) {
-        char button_name[16];
-        snprintf(button_name, sizeof(button_name), "Button_%d", i);
-        esp_rmaker_param_t *button = esp_rmaker_param_create(button_name, "esp.param.toggle",
-                                                               esp_rmaker_bool(false), PROP_FLAG_WRITE);
+    /* Power button as TRIGGER */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(custom_device, power_btn);
+
+    /* Button 1-12 as TRIGGERS (momentary push buttons) */
+    static const char *button_names[] = {
+        "Button_1", "Button_2", "Button_3", "Button_4",
+        "Button_5", "Button_6", "Button_7", "Button_8",
+        "Button_9", "Button_10", "Button_11", "Button_12"
+    };
+    for (int i = 0; i < 12; i++) {
+        esp_rmaker_param_t *button = esp_rmaker_param_create(button_names[i], "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+        esp_rmaker_param_add_ui_type(button, ESP_RMAKER_UI_TRIGGER);
         esp_rmaker_device_add_param(custom_device, button);
     }
 
@@ -737,11 +947,144 @@ static esp_err_t create_custom_device(esp_rmaker_node_t *node)
     esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
                                                                esp_rmaker_str("None"), PROP_FLAG_WRITE);
     esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *custom_learn_options[] = {"None", "Power", "Button1", "Button2", "Button3", "Button4",
+                                                   "Button5", "Button6", "Button7", "Button8", "Button9",
+                                                   "Button10", "Button11", "Button12"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, custom_learn_options, 14);
     esp_rmaker_device_add_param(custom_device, learn_mode);
 
     esp_rmaker_node_add_device(node, custom_device);
-    ESP_LOGI(TAG, "Custom device created");
+    ESP_LOGI(TAG, "Custom Remote device created");
     return ESP_OK;
+}
+
+static esp_err_t create_custom_device_2(esp_rmaker_node_t *node)
+{
+    /* Create as generic device for full control over UI */
+    custom_device_2 = esp_rmaker_device_create("Custom Remote 2", ESP_RMAKER_DEVICE_OTHER, NULL);
+    if (!custom_device_2) {
+        ESP_LOGE(TAG, "Failed to create Custom device 2");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(custom_device_2, custom_write_cb, NULL);
+    esp_rmaker_device_add_param(custom_device_2, esp_rmaker_name_param_create("Name", "Custom Remote 2"));
+
+    /* Power button as TRIGGER */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(custom_device_2, power_btn);
+
+    /* Button 1-12 as TRIGGERS (momentary push buttons) */
+    static const char *button_names_2[] = {
+        "Button_1", "Button_2", "Button_3", "Button_4",
+        "Button_5", "Button_6", "Button_7", "Button_8",
+        "Button_9", "Button_10", "Button_11", "Button_12"
+    };
+    for (int i = 0; i < 12; i++) {
+        esp_rmaker_param_t *button = esp_rmaker_param_create(button_names_2[i], "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+        esp_rmaker_param_add_ui_type(button, ESP_RMAKER_UI_TRIGGER);
+        esp_rmaker_device_add_param(custom_device_2, button);
+    }
+
+    /* Learning mode parameter */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *custom2_learn_options[] = {"None", "Power", "Button1", "Button2", "Button3", "Button4",
+                                                    "Button5", "Button6", "Button7", "Button8", "Button9",
+                                                    "Button10", "Button11", "Button12"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, custom2_learn_options, 14);
+    esp_rmaker_device_add_param(custom_device_2, learn_mode);
+
+    esp_rmaker_node_add_device(node, custom_device_2);
+    ESP_LOGI(TAG, "Custom Remote 2 device created");
+    return ESP_OK;
+}
+
+static esp_err_t create_custom_device_3(esp_rmaker_node_t *node)
+{
+    /* Create as generic device for full control over UI */
+    custom_device_3 = esp_rmaker_device_create("Custom Remote 3", ESP_RMAKER_DEVICE_OTHER, NULL);
+    if (!custom_device_3) {
+        ESP_LOGE(TAG, "Failed to create Custom device 3");
+        return ESP_FAIL;
+    }
+
+    esp_rmaker_device_add_cb(custom_device_3, custom_write_cb, NULL);
+    esp_rmaker_device_add_param(custom_device_3, esp_rmaker_name_param_create("Name", "Custom Remote 3"));
+
+    /* Power button as TRIGGER */
+    esp_rmaker_param_t *power_btn = esp_rmaker_param_create("Power", "esp.param.toggle",
+                                                              esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(power_btn, ESP_RMAKER_UI_TRIGGER);
+    esp_rmaker_device_add_param(custom_device_3, power_btn);
+
+    /* Button 1-12 as TRIGGERS (momentary push buttons) */
+    static const char *button_names_3[] = {
+        "Button_1", "Button_2", "Button_3", "Button_4",
+        "Button_5", "Button_6", "Button_7", "Button_8",
+        "Button_9", "Button_10", "Button_11", "Button_12"
+    };
+    for (int i = 0; i < 12; i++) {
+        esp_rmaker_param_t *button = esp_rmaker_param_create(button_names_3[i], "esp.param.toggle",
+                                                               esp_rmaker_bool(false), PROP_FLAG_READ | PROP_FLAG_WRITE);
+        esp_rmaker_param_add_ui_type(button, ESP_RMAKER_UI_TRIGGER);
+        esp_rmaker_device_add_param(custom_device_3, button);
+    }
+
+    /* Learning mode parameter */
+    esp_rmaker_param_t *learn_mode = esp_rmaker_param_create("Learn_Mode", "esp.param.string",
+                                                               esp_rmaker_str("None"), PROP_FLAG_WRITE);
+    esp_rmaker_param_add_ui_type(learn_mode, ESP_RMAKER_UI_DROPDOWN);
+    static const char *custom3_learn_options[] = {"None", "Power", "Button1", "Button2", "Button3", "Button4",
+                                                    "Button5", "Button6", "Button7", "Button8", "Button9",
+                                                    "Button10", "Button11", "Button12"};
+    esp_rmaker_param_add_valid_str_list(learn_mode, custom3_learn_options, 14);
+    esp_rmaker_device_add_param(custom_device_3, learn_mode);
+
+    esp_rmaker_node_add_device(node, custom_device_3);
+    ESP_LOGI(TAG, "Custom Remote 3 device created");
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * IP EVENT HANDLER - Just for logging (devices created in app_main)
+ * ============================================================================ */
+
+static void ip_event_handler(void *arg, esp_event_base_t event_base,
+                              int32_t event_id, void *event_data)
+{
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
+
+        /* Update LED status to connected */
+        rgb_led_set_mode(LED_MODE_WIFI_CONNECTED);
+    }
+}
+
+/* ============================================================================
+ * RESET HANDLER TASK (Handles WiFi reset outside timer context)
+ * ============================================================================ */
+
+#define RESET_TASK_WIFI_RESET    (1 << 0)
+
+static void reset_handler_task(void *arg)
+{
+    uint32_t notification_value;
+
+    while (1) {
+        /* Wait for notification from timer callback */
+        if (xTaskNotifyWait(0, 0xFFFFFFFF, &notification_value, portMAX_DELAY) == pdTRUE) {
+            if (notification_value & RESET_TASK_WIFI_RESET) {
+                ESP_LOGI(TAG, "Reset handler task: executing WiFi reset");
+                app_wifi_reset();
+            }
+        }
+    }
 }
 
 /* ============================================================================
@@ -756,7 +1099,7 @@ static void boot_button_timer_cb(TimerHandle_t timer)
         if (press_duration >= BUTTON_FACTORY_RESET_MS && !factory_reset_triggered) {
             ESP_LOGW(TAG, "Factory reset triggered!");
             factory_reset_triggered = true;
-            rgb_led_set_status(LED_STATUS_ERROR);
+            rgb_led_set_mode(LED_MODE_WIFI_ERROR);
 
             /* Clear all IR codes */
             ir_action_clear_all();
@@ -768,8 +1111,12 @@ static void boot_button_timer_cb(TimerHandle_t timer)
     } else {
         if (press_duration >= BUTTON_WIFI_RESET_MS && press_duration < BUTTON_FACTORY_RESET_MS) {
             ESP_LOGI(TAG, "WiFi reset triggered");
-            rgb_led_set_status(LED_STATUS_ERROR);
-            app_wifi_reset();
+            rgb_led_set_mode(LED_MODE_WIFI_ERROR);
+
+            /* Notify reset handler task instead of calling app_wifi_reset() directly */
+            if (reset_handler_task_handle != NULL) {
+                xTaskNotify(reset_handler_task_handle, RESET_TASK_WIFI_RESET, eSetBits);
+            }
         }
 
         xTimerStop(timer, 0);
@@ -789,6 +1136,21 @@ static void IRAM_ATTR boot_button_isr_handler(void *arg)
 
 static void init_boot_button(void)
 {
+    /* Create reset handler task first */
+    BaseType_t ret = xTaskCreate(
+        reset_handler_task,
+        "reset_handler",
+        4096,               /* Stack size */
+        NULL,               /* Parameters */
+        5,                  /* Priority */
+        &reset_handler_task_handle
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create reset handler task");
+        return;
+    }
+
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << GPIO_BOOT_BUTTON),
         .mode = GPIO_MODE_INPUT,
@@ -831,17 +1193,9 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    /* Initialize event loop */
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
     /* Initialize RGB LED */
-    rgb_led_config_t led_config = {
-        .gpio_num = GPIO_RGB_LED,
-        .led_count = RGB_LED_COUNT,
-        .rmt_channel = RGB_LED_RMT_CHANNEL
-    };
-    ESP_ERROR_CHECK(rgb_led_init(&led_config));
-    rgb_led_set_status(LED_STATUS_IDLE);
+    ESP_ERROR_CHECK(rgb_led_init(GPIO_RGB_LED));
+    rgb_led_set_mode(LED_MODE_WIFI_CONNECTING);
 
     /* Initialize IR control */
     ESP_LOGI(TAG, "Initializing IR control...");
@@ -867,49 +1221,72 @@ void app_main(void)
     /* Initialize boot button */
     init_boot_button();
 
-    /* Initialize RainMaker */
-    ESP_LOGI(TAG, "Initializing ESP RainMaker...");
+    /* Initialize TCP/IP stack and event loop */
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* Initialize WiFi */
+    app_wifi_init();
+
+    /* Register IP event handler */
+    ESP_LOGI(TAG, "Registering IP event handler...");
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                &ip_event_handler, NULL));
+
+    /* Initialize RainMaker node */
+    ESP_LOGI(TAG, "Initializing ESP RainMaker node...");
     esp_rmaker_config_t rainmaker_cfg = {
-        .enable_time_sync = false,
+        .enable_time_sync = true,  // RainMaker will handle SNTP automatically
     };
-    esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
-    if (!node) {
+    rainmaker_node = esp_rmaker_node_init(&rainmaker_cfg, DEVICE_NAME, DEVICE_TYPE);
+    if (!rainmaker_node) {
         ESP_LOGE(TAG, "Failed to initialize RainMaker node");
         abort();
     }
 
-    /* Create all devices */
+    /* Create ALL devices BEFORE starting RainMaker (OFFICIAL PATTERN) */
     ESP_LOGI(TAG, "Creating RainMaker devices...");
-    ESP_ERROR_CHECK(create_tv_device(node));
-    ESP_ERROR_CHECK(create_ac_device(node));
-    ESP_ERROR_CHECK(create_stb_device(node));
-    ESP_ERROR_CHECK(create_speaker_device(node));
-    ESP_ERROR_CHECK(create_fan_device(node));
-    ESP_ERROR_CHECK(create_custom_device(node));
+    ESP_ERROR_CHECK(create_tv_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_ac_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_stb_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_speaker_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_fan_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_custom_device(rainmaker_node));
+    ESP_ERROR_CHECK(create_custom_device_2(rainmaker_node));
+    ESP_ERROR_CHECK(create_custom_device_3(rainmaker_node));
+    devices_created = true;
+    ESP_LOGI(TAG, "All RainMaker devices created (8 devices total)");
 
     /* Enable OTA */
     esp_rmaker_ota_enable_default();
 
-    /* Enable scheduling */
-    esp_rmaker_schedule_enable();
-
     /* Enable timezone service */
     esp_rmaker_timezone_service_enable();
 
-    /* Start RainMaker */
+    /* Enable scheduling */
+    esp_rmaker_schedule_enable();
+
+    /* Start RainMaker - BEFORE WiFi provisioning (OFFICIAL PATTERN) */
     ESP_LOGI(TAG, "Starting ESP RainMaker...");
     ESP_ERROR_CHECK(esp_rmaker_start());
 
-    /* Initialize WiFi with BLE provisioning */
-    ESP_LOGI(TAG, "Initializing WiFi...");
-    ESP_ERROR_CHECK(app_wifi_init("abcd1234")); // Default PoP
+    /* Local control is auto-enabled by RainMaker - do NOT call manually */
+    ESP_LOGI(TAG, "Local control will be auto-enabled by RainMaker");
+
+    /* Start WiFi provisioning - AFTER RainMaker is started */
+    ESP_LOGI(TAG, "Starting WiFi provisioning...");
+    app_wifi_start(POP_TYPE_RANDOM);
 
     /* Initialize console for debugging */
     esp_rmaker_console_init();
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  Universal IR Remote Ready!");
-    ESP_LOGI(TAG, "  Devices: TV, AC, STB, Speaker, Fan, Custom");
+    ESP_LOGI(TAG, "  Use RainMaker app to provision and control");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Use RainMaker app to provision and control");
+
+    /* Main task idle loop to keep task alive */
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

@@ -1,6 +1,7 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  espressif/esp_rainmaker: "^1.2.0"
+  espressif/esp_rainmaker: "~1.1.0"
+  espressif/qrcode: "^0.1.0"
   ## Required for other components
   idf:
     version: ">=5.0.0"

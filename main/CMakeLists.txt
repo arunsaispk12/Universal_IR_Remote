@@ -16,6 +16,6 @@ idf_component_register(
         app_update
         esp_timer
         console
-    PRIV_REQUIRES
-        espressif__network_provisioning
+        wifi_provisioning
+        protocomm
 )

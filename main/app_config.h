@@ -65,7 +65,7 @@
 #define IR_TASK_STACK_SIZE      8192
 
 #define LED_TASK_PRIORITY       3
-#define LED_TASK_STACK_SIZE     2048
+#define LED_TASK_STACK_SIZE     4096
 
 /* ============================================================================
  * BUTTON CONFIGURATION

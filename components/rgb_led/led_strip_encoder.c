@@ -105,15 +105,15 @@ esp_err_t rmt_new_led_strip_encoder(const led_strip_encoder_config_t *config, rm
     rmt_bytes_encoder_config_t bytes_encoder_config = {
         .bit0 = {
             .level0 = 1,
-            .duration0 = WS2812_T0H_NS * config->resolution / 1000000000, // T0H
+            .duration0 = 0.4 * config->resolution / 1000000, // T0H=0.4us
             .level1 = 0,
-            .duration1 = WS2812_T0L_NS * config->resolution / 1000000000, // T0L
+            .duration1 = 0.85 * config->resolution / 1000000, // T0L=0.85us
         },
         .bit1 = {
             .level0 = 1,
-            .duration0 = WS2812_T1H_NS * config->resolution / 1000000000, // T1H
+            .duration0 = 0.8 * config->resolution / 1000000, // T1H=0.8us
             .level1 = 0,
-            .duration1 = WS2812_T1L_NS * config->resolution / 1000000000, // T1L
+            .duration1 = 0.45 * config->resolution / 1000000, // T1L=0.45us
         },
         .flags.msb_first = 1 // WS2812 transfers MSB first
     };
@@ -123,7 +123,7 @@ esp_err_t rmt_new_led_strip_encoder(const led_strip_encoder_config_t *config, rm
     rmt_copy_encoder_config_t copy_encoder_config = {};
     ESP_GOTO_ON_ERROR(rmt_new_copy_encoder(&copy_encoder_config, &led_encoder->copy_encoder), err, TAG, "create copy encoder failed");
 
-    uint32_t reset_ticks = config->resolution / 1000000 * WS2812_RESET_US;
+    uint32_t reset_ticks = config->resolution / 1000000 * 50 / 2; // reset code duration defaults to 50us (25us per level)
     led_encoder->reset_code = (rmt_symbol_word_t) {
         .level0 = 0,
         .duration0 = reset_ticks,
