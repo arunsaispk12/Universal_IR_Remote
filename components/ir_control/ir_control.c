@@ -894,13 +894,11 @@ static void ir_receive_task(void *pvParameters)
                         }
                     }
                 } else if (learning_mode) {
-                    ESP_LOGW(TAG, "Invalid IR signal: %d symbols (need 10-%d)",
+                    // Silently ignore short signals during learning (e.g., JVC repeat codes)
+                    // These are 2-symbol repeat codes that should not interrupt learning
+                    ESP_LOGD(TAG, "Ignoring short signal during learning: %d symbols (need 10-%d)",
                              rx_data.num_symbols, IR_MAX_CODE_LENGTH);
-
-                    // Call failure callback
-                    if (callbacks.learn_fail_cb) {
-                        callbacks.learn_fail_cb(current_learning_button, callbacks.user_arg);
-                    }
+                    // Continue waiting for valid IR code - don't call failure callback
                 }
             }
 
